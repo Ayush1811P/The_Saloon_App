@@ -33,7 +33,7 @@ import {
   useParams,
   useLocation,
 } from 'react-router-dom'
-import { bookings, customerProfile, notifications, offers, salons, serviceCatalog } from './data/mockData'
+import { customerProfile, notifications, offers, salons, serviceCatalog } from './data/mockData'
 import { issueAdminSession, revokeAdminSession, validateAdminSession } from './lib/adminService'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 
@@ -60,7 +60,6 @@ function validateIndianPhone(phoneDigits) {
 
 const navItems = [
   { label: 'Home', to: '/customer/home' },
-  { label: 'Explore', to: '/customer/explore' },
   { label: 'My Bookings', to: '/customer/bookings' },
   { label: 'Notifications', to: '/customer/notifications' },
   { label: 'Profile', to: '/customer/profile' },
@@ -347,6 +346,7 @@ function LandingPage() {
 }
 
 function AppHeader({ title, subtitle, userName, onLogout }) {
+  const [menuOpen, setMenuOpen] = useState(false)
   const navigate = useNavigate()
 
   return (
@@ -380,13 +380,29 @@ function AppHeader({ title, subtitle, userName, onLogout }) {
           </button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => navigate('/customer/home')}
-          className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 md:hidden"
-        >
-          <Menu size={18} />
-        </button>
+        <div className="relative md:hidden">
+          <button
+            type="button"
+            onClick={() => setMenuOpen((value) => !value)}
+            aria-expanded={menuOpen}
+            aria-label="Open account menu"
+            className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700"
+          >
+            <Menu size={18} />
+          </button>
+          {menuOpen && (
+            <div className="absolute right-0 top-14 z-50 w-40 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
+              <button
+                type="button"
+                onClick={onLogout}
+                className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50"
+              >
+                <LogOut size={15} />
+                Logout
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   )
@@ -395,7 +411,7 @@ function AppHeader({ title, subtitle, userName, onLogout }) {
 function BottomNavigation() {
   return (
     <nav className="sticky bottom-0 z-40 border-t border-slate-200 bg-white/90 p-3 backdrop-blur-xl md:hidden">
-      <div className="mx-auto grid max-w-md grid-cols-5 gap-2">
+      <div className="mx-auto grid max-w-md grid-cols-4 gap-2">
         {navItems.map(({ label, to }) => (
           <NavLink
             key={to}
@@ -410,7 +426,6 @@ function BottomNavigation() {
           >
             <span className="h-5 w-5">
               {label === 'Home' && <Bell size={18} />}
-              {label === 'Explore' && <Search size={18} />}
               {label === 'My Bookings' && <CalendarCheck2 size={18} />}
               {label === 'Notifications' && <Bell size={18} />}
               {label === 'Profile' && <UserRound size={18} />}
@@ -590,9 +605,6 @@ function ProfileCard({ user }) {
             <p className="text-sm text-violet-100">{user.tier}</p>
           </div>
         </div>
-        <span className="rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold text-violet-100">
-          {user.points} pts
-        </span>
       </div>
 
       <div className="mt-6 grid grid-cols-2 gap-3 text-sm text-violet-100">
@@ -639,7 +651,7 @@ function ConfirmationDialog({ title, message, onClose, onConfirm }) {
   )
 }
 
-function HomePage({ userName }) {
+function HomePage({ userName, userBookings, onBookingCreated }) {
   const { data: serviceList = serviceCatalog, isLoading } = useQuery({
     queryKey: ['services-home'],
     queryFn: async () => serviceCatalog,
@@ -678,15 +690,6 @@ function HomePage({ userName }) {
             <Bell size={18} />
             <span className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-rose-500" />
           </button>
-        </div>
-
-        <div className="mt-6 flex gap-3 rounded-[24px] border border-slate-200 bg-white/80 p-3 shadow-inner shadow-slate-100">
-          <Search size={18} className="mt-1 text-slate-400" />
-          <input
-            type="text"
-            placeholder="Search services"
-            className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400"
-          />
         </div>
 
         <div className="mt-6">
@@ -795,6 +798,17 @@ function HomePage({ userName }) {
           message={`Your appointment is confirmed for ${selectedServices.map((service) => service.name).join(', ')}. Please reach 5 minutes before your appointment time. When your turn is called, you must arrive within 10 minutes or the seat may be given to another customer. ${isPriority ? 'Priority / Emergency has been added for ₹50 extra.' : 'No priority option selected.'}`}
           onClose={() => setIsBookingOpen(false)}
           onConfirm={() => {
+            const booking = {
+              id: `BK-${Date.now().toString().slice(-6)}`,
+              service: selectedServices.map((service) => service.name).join(', '),
+              salon: 'BOOKSALOON Demo Salon',
+              amount: `₹${totalWithPriority}`,
+              barber: 'To be assigned',
+              chair: 'To be assigned',
+              date: new Date().toLocaleDateString('en-IN'),
+              status: 'Pending',
+            }
+            onBookingCreated(booking)
             setIsBookingOpen(false)
             setSelectedServices([])
             setIsPriority(false)
@@ -828,9 +842,10 @@ function HomePage({ userName }) {
           <h2 className="text-xl font-black tracking-[-0.06em] text-slate-900">Upcoming appointments</h2>
         </div>
         <div className="grid gap-4 md:grid-cols-3">
-          {bookings.map((booking) => (
+          {userBookings.map((booking) => (
             <BookingCard key={booking.id} booking={booking} />
           ))}
+          {userBookings.length === 0 && <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">No appointments booked yet.</p>}
         </div>
       </section>
     </div>
@@ -900,12 +915,13 @@ function ExplorePage() {
   )
 }
 
-function BookingsPage() {
+function BookingsPage({ userBookings }) {
   return (
     <div className="space-y-4 pb-24">
-      {bookings.map((booking) => (
+      {userBookings.map((booking) => (
         <BookingCard key={booking.id} booking={booking} />
       ))}
+      {userBookings.length === 0 && <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">No appointments booked yet.</p>}
     </div>
   )
 }
@@ -934,29 +950,15 @@ function ProfilePage({ user }) {
           <ul className="mt-4 space-y-3 text-sm text-slate-600">
             <li className="flex items-center justify-between">
               <span>Phone number</span>
-              <span className="font-semibold text-slate-800">+91 98765 43210</span>
+              <span className="font-semibold text-slate-800">{user.phone || 'Not provided'}</span>
             </li>
             <li className="flex items-center justify-between">
-              <span>Preferred salon</span>
-              <span className="font-semibold text-slate-800">Velvet Studio</span>
-            </li>
-            <li className="flex items-center justify-between">
-              <span>Default payment</span>
-              <span className="font-semibold text-slate-800">UPI</span>
+              <span>Full name</span>
+              <span className="font-semibold text-slate-800">{user.fullName || 'Not provided'}</span>
             </li>
           </ul>
         </div>
 
-        <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_16px_32px_rgba(15,23,42,0.04)]">
-          <div className="flex items-center justify-between">
-            <p className="text-lg font-bold text-slate-900">Membership</p>
-            <WalletCards className="text-violet-600" size={18} />
-          </div>
-          <div className="mt-4 rounded-2xl bg-gradient-to-r from-violet-600 via-indigo-500 to-fuchsia-500 p-4 text-white">
-            <p className="text-sm text-violet-100">Gold Member</p>
-            <p className="mt-2 text-2xl font-black tracking-[-0.08em]">1,480 pts</p>
-          </div>
-        </div>
       </div>
     </div>
   )
@@ -1619,15 +1621,16 @@ function AuthPage({ mode, setMode, onLogin, onRegister }) {
 }
 
 function CustomerApp({ user, onLogout }) {
+  const [userBookings, setUserBookings] = useState([])
+
   return (
     <div className="min-h-screen bg-[#f5f7fb] text-slate-900">
       <AppHeader title="BOOKSALOON" subtitle="Premium salon booking" userName={user.fullName} onLogout={onLogout} />
       <main className="mx-auto max-w-6xl px-4 py-5 sm:px-6 lg:px-8">
         <Routes>
           <Route index element={<Navigate to="home" replace />} />
-          <Route path="home" element={<HomePage userName={user.fullName} />} />
-          <Route path="explore" element={<ExplorePage />} />
-          <Route path="bookings" element={<BookingsPage />} />
+          <Route path="home" element={<HomePage userName={user.fullName} userBookings={userBookings} onBookingCreated={(booking) => setUserBookings([booking])} />} />
+          <Route path="bookings" element={<BookingsPage userBookings={userBookings} />} />
           <Route path="notifications" element={<NotificationsPage />} />
           <Route path="profile" element={<ProfilePage user={user} />} />
           <Route path="salon/:salonId" element={<SalonDetailPage />} />
