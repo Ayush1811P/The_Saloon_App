@@ -1,0 +1,18 @@
+-- BOOKSALOON | 008: Optional development seed data
+-- This seeds salon catalogue data only. It does not create auth users.
+-- Replace the placeholder salon UUID below with a real salon ID after onboarding.
+
+-- Example:
+-- insert into public.service_categories (salon_id, name, sort_order)
+-- values ('00000000-0000-0000-0000-000000000001', 'Hair', 1),
+--        ('00000000-0000-0000-0000-000000000001', 'Beard', 2);
+--
+-- insert into public.services
+--   (salon_id, category_id, name, description, price_paise, duration_minutes)
+-- values
+--   ('00000000-0000-0000-0000-000000000001', '<CATEGORY_UUID>', 'Classic Haircut',
+--    'Standard haircut', 20000, 30),
+--   ('00000000-0000-0000-0000-000000000001', '<CATEGORY_UUID>', 'Beard Trim',
+--    'Beard shaping and trim', 10000, 15);
+--
+-- Intentionally no fake production users, bookings, or payments are inserted.

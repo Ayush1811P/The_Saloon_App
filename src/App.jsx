@@ -1,0 +1,1746 @@
+import { useEffect, useMemo, useState } from 'react'
+import {
+  ArrowRight,
+  Bell,
+  CalendarCheck2,
+  CheckCircle2,
+  ChevronRight,
+  Clock3,
+  Eye,
+  EyeOff,
+  LogOut,
+  MapPin,
+  Menu,
+  Scissors,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  Star,
+  UserRound,
+  Users,
+  WalletCards,
+} from 'lucide-react'
+import { AnimatePresence, motion } from 'framer-motion'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  BrowserRouter,
+  Link,
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+  useNavigate,
+  useParams,
+  useLocation,
+} from 'react-router-dom'
+import { bookings, customerProfile, notifications, offers, salons, serviceCatalog } from './data/mockData'
+import { issueAdminSession, revokeAdminSession, validateAdminSession } from './lib/adminService'
+import { isSupabaseConfigured, supabase } from './lib/supabase'
+
+const formatCurrency = (value) => `₹${value.toLocaleString('en-IN')}`
+const INDIAN_PHONE_PATTERN = /^[6-9]\d{9}$/
+
+function formatIndianPhone(phoneDigits) {
+  return `+91${phoneDigits}`
+}
+
+function getAuthEmail(phone) {
+  return `phone-${phone.replace('+91', '')}@booksaloon.app`
+}
+
+function getAdminAuthEmail(phone) {
+  return `${phone.replace('+91', '')}@booksaloon.app`
+}
+
+function validateIndianPhone(phoneDigits) {
+  if (!INDIAN_PHONE_PATTERN.test(phoneDigits)) {
+    throw new Error('Enter a valid 10-digit Indian mobile number starting with 6, 7, 8 or 9.')
+  }
+}
+
+const navItems = [
+  { label: 'Home', to: '/customer/home' },
+  { label: 'Explore', to: '/customer/explore' },
+  { label: 'My Bookings', to: '/customer/bookings' },
+  { label: 'Notifications', to: '/customer/notifications' },
+  { label: 'Profile', to: '/customer/profile' },
+]
+
+function PrimaryButton({ children, className = '', ...props }) {
+  return (
+    <button
+      {...props}
+      className={`inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-violet-600 via-indigo-500 to-fuchsia-500 px-5 py-3 text-sm font-semibold text-white shadow-[0_20px_40px_rgba(91,65,255,0.35)] transition hover:translate-y-[-1px] hover:shadow-[0_24px_48px_rgba(91,65,255,0.45)] ${className}`}
+    >
+      {children}
+    </button>
+  )
+}
+
+function SecondaryButton({ children, className = '', ...props }) {
+  return (
+    <button
+      {...props}
+      className={`inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white/80 px-5 py-3 text-sm font-semibold text-slate-700 backdrop-blur-sm transition hover:border-slate-300 hover:bg-white ${className}`}
+    >
+      {children}
+    </button>
+  )
+}
+
+function LandingHeader({ onAction }) {
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  return (
+    <header className="sticky top-0 z-40 border-b border-white/10 bg-[#0b1220]/90 text-white backdrop-blur-xl">
+      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-3 px-4 py-3 sm:flex-nowrap sm:gap-6 sm:px-5 sm:py-4 lg:px-8">
+        <div className="order-4 ml-auto flex shrink-0 items-center gap-1 sm:order-3 sm:gap-2">
+          <button type="button" onClick={() => onAction('/login')} className="rounded-full px-2 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10 sm:px-3 sm:text-sm">
+            Login
+          </button>
+          <button type="button" onClick={() => onAction('/register')} className="rounded-full bg-[#d9b78c] px-3 py-2 text-xs font-bold text-[#0b1220] transition hover:bg-[#e7cda9] sm:px-4 sm:text-sm">
+            Register
+          </button>
+        </div>
+        <Link
+          to="/"
+          aria-label="Go to the BOOKSALOON landing page"
+          className="order-3 flex w-full items-center justify-center gap-3 text-left sm:order-1 sm:w-auto sm:justify-start"
+        >
+          <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#d9b78c] text-[#0b1220] sm:h-10 sm:w-10">
+            <Scissors size={19} />
+          </div>
+          <div>
+            <p className="text-base font-black tracking-[-0.06em] sm:text-lg">BOOKSALOON</p>
+            <p className="text-[9px] uppercase tracking-[0.16em] text-slate-400 sm:text-[10px] sm:tracking-[0.2em]">Salon intelligence</p>
+          </div>
+        </Link>
+
+        <nav className="hidden items-center gap-7 text-sm text-slate-300 sm:order-2 lg:flex">
+          {[
+            ['Home', 'home'],
+            ['Services', 'services'],
+            ['Quick Turn', 'quick-turn'],
+            ['How It Works', 'how-it-works'],
+            ['Offers', 'offers'],
+          ].map(([label, id]) => (
+            <a key={id} href={`#${id}`} className="transition hover:text-white">{label}</a>
+          ))}
+        </nav>
+
+        <div className="order-5 flex items-center gap-2 sm:order-4">
+          <button type="button" onClick={() => onAction('/register')} className="hidden rounded-full border border-[#d9b78c]/50 px-4 py-2 text-sm font-semibold text-[#f0d7b2] transition hover:bg-[#d9b78c]/10 lg:inline-flex">
+            Book Appointment
+          </button>
+          <button type="button" onClick={() => setMenuOpen((value) => !value)} className="ml-1 flex h-10 w-10 items-center justify-center rounded-full border border-white/15 lg:hidden" aria-label="Toggle menu">
+            <Menu size={18} />
+          </button>
+        </div>
+      </div>
+
+      {menuOpen && (
+        <nav className="border-t border-white/10 px-5 py-4 lg:hidden">
+          <div className="grid gap-3 text-sm text-slate-300">
+            {[
+              ['Home', 'home'],
+              ['Services', 'services'],
+              ['Quick Turn', 'quick-turn'],
+              ['How It Works', 'how-it-works'],
+              ['Offers', 'offers'],
+            ].map(([label, id]) => (
+              <a key={id} href={`#${id}`} onClick={() => setMenuOpen(false)}>{label}</a>
+            ))}
+          </div>
+        </nav>
+      )}
+    </header>
+  )
+}
+
+function LandingPage() {
+  const navigate = useNavigate()
+  const [, setAdminClickCount] = useState(0)
+  const landingServices = [
+    ...serviceCatalog,
+    {
+      id: 'facial-skin-care',
+      name: 'Facial & Skin Care',
+      description: 'Skin-focused care for a refreshed, polished finish.',
+      price: 250,
+      duration: 45,
+      employees: ['Neha', 'Riya'],
+      offers: ['Glow care'],
+    },
+  ]
+  const goToAuth = (path) => navigate(path, { state: { from: '/customer/home', intent: path === '/register' ? 'register' : 'booking' } })
+  const handleFooterBrandClick = () => {
+    setAdminClickCount((count) => {
+      const nextCount = count + 1
+      if (nextCount === 10) {
+        navigate('/admin/login')
+        return 0
+      }
+      return nextCount
+    })
+  }
+
+  return (
+    <div className="min-h-screen bg-[#f7f4ef] text-[#172033]">
+      <LandingHeader onAction={goToAuth} />
+
+      <main>
+        <section id="home" className="relative overflow-hidden bg-[#0b1220] text-white">
+          <div className="absolute -left-24 top-20 h-72 w-72 rounded-full bg-[#b48a5a]/20 blur-3xl" />
+          <div className="absolute right-0 top-0 h-full w-1/2 bg-[radial-gradient(circle_at_top_right,rgba(217,183,140,0.2),transparent_58%)]" />
+          <div className="relative mx-auto grid max-w-7xl items-center gap-10 px-4 py-14 sm:gap-12 sm:px-5 sm:py-24 lg:grid-cols-[1.05fr_0.95fr] lg:px-8 lg:py-28">
+            <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}>
+              <p className="mb-5 text-xs font-bold uppercase tracking-[0.28em] text-[#d9b78c]">A better way to book your time</p>
+              <h1 className="max-w-3xl text-4xl font-black leading-[0.98] tracking-[-0.08em] sm:text-7xl">
+                Your Style.<br />Your Time.<br /><span className="text-[#d9b78c]">Your Turn.</span>
+              </h1>
+              <p className="mt-6 max-w-xl text-base leading-7 text-slate-300 sm:text-lg">
+                Book your salon visit in a few taps. Know the price, choose your service and spend less time waiting.
+              </p>
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+                <button type="button" onClick={() => goToAuth('/register')} className="inline-flex items-center justify-center gap-2 rounded-full bg-[#d9b78c] px-6 py-3.5 text-sm font-bold text-[#0b1220] transition hover:bg-[#e7cda9]">
+                  Book your appointment <ArrowRight size={16} />
+                </button>
+                <a href="#services" className="inline-flex items-center justify-center gap-2 rounded-full border border-white/20 px-6 py-3.5 text-sm font-semibold text-white transition hover:bg-white/10">
+                  Explore services
+                </a>
+              </div>
+              <div className="mt-10 flex flex-wrap gap-6 text-sm text-slate-400">
+                <span className="inline-flex items-center gap-2"><CheckCircle2 size={16} className="text-[#d9b78c]" /> Clear pricing</span>
+                <span className="inline-flex items-center gap-2"><CheckCircle2 size={16} className="text-[#d9b78c]" /> Less waiting</span>
+              </div>
+            </motion.div>
+
+            <motion.div initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.7, delay: 0.1 }} className="relative">
+              <div className="overflow-hidden rounded-[36px] border border-white/15 bg-white/10 p-2 shadow-2xl shadow-black/30">
+                <img src={salons[0].image} alt="Premium salon interior" className="h-[340px] w-full rounded-[30px] object-cover sm:h-[500px]" />
+              </div>
+              <div className="absolute -bottom-5 left-5 right-5 rounded-3xl border border-white/15 bg-[#111b2d]/95 p-4 shadow-xl backdrop-blur sm:left-auto sm:w-72">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-slate-400">Next available</p>
+                    <p className="mt-1 text-lg font-bold">Quick Turn</p>
+                  </div>
+                  <span className="rounded-full bg-emerald-400/15 px-3 py-1 text-xs font-semibold text-emerald-300">Demo preview</span>
+                </div>
+                <div className="mt-4 flex items-center justify-between text-sm text-slate-300">
+                  <span className="inline-flex items-center gap-2"><Clock3 size={15} /> Around 15 min</span>
+                  <ArrowRight size={16} className="text-[#d9b78c]" />
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        </section>
+
+        <section id="services" className="mx-auto max-w-7xl px-4 py-16 sm:px-5 sm:py-20 lg:px-8">
+          <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.25em] text-[#a06f3e]">Made for your routine</p>
+              <h2 className="mt-3 text-3xl font-black tracking-[-0.07em] sm:text-5xl">Everything your look needs.</h2>
+            </div>
+            <p className="max-w-sm text-sm leading-6 text-slate-500">Choose a service, compare what matters and book with confidence. More services can be loaded per salon from Supabase.</p>
+          </div>
+          <div className="mt-10 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {landingServices.map((service, index) => (
+              <motion.article key={service.id} initial={{ opacity: 0, y: 16 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} transition={{ delay: index * 0.06 }} className="group rounded-[28px] border border-[#e7dfd4] bg-white p-5 shadow-[0_18px_40px_rgba(74,54,34,0.06)] transition hover:-translate-y-1">
+                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#f2e7d8] text-[#9b6b3d]">
+                  {index === 0 ? <Scissors size={21} /> : index === 1 ? <UserRound size={21} /> : index === 2 ? <Sparkles size={21} /> : <Star size={21} />}
+                </div>
+                <h3 className="mt-7 text-xl font-black tracking-[-0.05em]">{index === 0 ? 'Haircut & Styling' : index === 1 ? 'Beard & Grooming' : index === 2 ? 'Hair Spa' : 'Facial & Skin Care'}</h3>
+                <p className="mt-2 min-h-12 text-sm leading-6 text-slate-500">{service.description}</p>
+                <div className="mt-6 flex items-end justify-between border-t border-slate-100 pt-4">
+                  <div><p className="text-lg font-black">₹{service.price}</p><p className="text-xs text-slate-400">{service.duration} mins</p></div>
+                  <button type="button" onClick={() => goToAuth('/register')} className="rounded-full bg-[#172033] px-3 py-2 text-xs font-bold text-white transition hover:bg-[#2b3a54]">Book now</button>
+                </div>
+              </motion.article>
+            ))}
+          </div>
+        </section>
+
+        <section id="quick-turn" className="bg-[#172033] px-4 py-16 text-white sm:px-5 sm:py-20 lg:px-8">
+          <div className="mx-auto grid max-w-7xl items-center gap-10 lg:grid-cols-[0.9fr_1.1fr]">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.25em] text-[#d9b78c]">Skip the calendar</p>
+              <h2 className="mt-3 text-3xl font-black tracking-[-0.07em] sm:text-5xl">Need a cut now?<br /><span className="text-[#d9b78c]">Take the next turn.</span></h2>
+              <p className="mt-5 max-w-lg leading-7 text-slate-300">Quick Turn connects you to the next available barber. See the estimated wait, claim your queue token and arrive when it is your time.</p>
+              <button type="button" onClick={() => goToAuth('/register')} className="mt-8 inline-flex items-center gap-2 rounded-full bg-[#d9b78c] px-6 py-3.5 text-sm font-bold text-[#0b1220]">Book Quick Turn <ArrowRight size={16} /></button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              {[
+                ['01', 'Next available barber', 'Choose the next expert instead of a fixed slot.'],
+                ['15 min', 'Estimated wait', 'A transparent estimate before you join.'],
+                ['Q-04', 'Queue token', 'Track your turn as the queue moves.'],
+              ].map(([value, title, body]) => (
+                <div key={title} className="rounded-[26px] border border-white/10 bg-white/5 p-5">
+                  <p className="text-3xl font-black tracking-[-0.08em] text-[#d9b78c]">{value}</p>
+                  <p className="mt-8 font-bold">{title}</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-400">{body}</p>
+                  <p className="mt-5 text-[10px] uppercase tracking-[0.16em] text-amber-300">Demo preview</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section id="how-it-works" className="mx-auto max-w-7xl px-4 py-16 sm:px-5 sm:py-20 lg:px-8">
+          <div className="text-center">
+            <p className="text-xs font-bold uppercase tracking-[0.25em] text-[#a06f3e]">Simple by design</p>
+            <h2 className="mt-3 text-3xl font-black tracking-[-0.07em] sm:text-5xl">Three steps to a better visit.</h2>
+          </div>
+          <div className="mt-12 grid gap-4 md:grid-cols-3">
+            {[
+              ['01', 'Choose your service', 'See clear prices, durations and available experts in one place.'],
+              ['02', 'Book or take Quick Turn', 'Reserve a time or join the next available queue.'],
+              ['03', 'Arrive right on time', 'Track your booking and spend less time in the waiting area.'],
+            ].map(([number, title, body]) => (
+              <div key={number} className="rounded-[28px] border border-[#e7dfd4] bg-[#fbf9f6] p-6">
+                <span className="text-sm font-black text-[#a06f3e]">{number}</span>
+                <h3 className="mt-12 text-2xl font-black tracking-[-0.06em]">{title}</h3>
+                <p className="mt-3 leading-7 text-slate-500">{body}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section id="offers" className="bg-[#efe7dc] px-4 py-16 sm:px-5 sm:py-20 lg:px-8">
+          <div className="mx-auto max-w-7xl">
+            <div className="flex items-end justify-between gap-4">
+              <div><p className="text-xs font-bold uppercase tracking-[0.25em] text-[#a06f3e]">Coming soon</p><h2 className="mt-3 text-4xl font-black tracking-[-0.07em]">Offers worth waiting for.</h2></div>
+              <span className="hidden rounded-full bg-white/70 px-3 py-2 text-xs font-semibold text-slate-500 sm:block">Salon-specific offers</span>
+            </div>
+            <div className="mt-10 grid gap-4 md:grid-cols-3 blur-sm">
+              {offers.map((offer) => <div key={offer.title} className="rounded-[26px] border border-white/70 bg-white/70 p-5"><span className="text-[10px] font-bold uppercase tracking-[0.15em] text-[#a06f3e]">{offer.badge}</span><h3 className="mt-8 text-2xl font-black">{offer.title}</h3><p className="mt-2 text-lg font-bold text-[#a06f3e]">{offer.discount}</p><p className="mt-2 text-sm text-slate-500">{offer.desc}</p></div>)}
+            </div>
+          </div>
+        </section>
+
+        <section className="mx-auto max-w-7xl px-4 py-16 sm:px-5 sm:py-20 lg:px-8">
+          <div className="grid gap-4 md:grid-cols-3">
+            {[
+              [WalletCards, 'Transparent pricing', 'Know what you will pay before you confirm.'],
+              [CalendarCheck2, 'Easy appointment booking', 'Find the right service and slot in a few taps.'],
+              [Clock3, 'Less waiting time', 'Quick Turn and queue tracking keep your day moving.'],
+            ].map(([Icon, title, body]) => <div key={title} className="rounded-[28px] bg-white p-6 shadow-[0_18px_40px_rgba(74,54,34,0.06)]"><Icon className="text-[#a06f3e]" size={22} /><h3 className="mt-8 text-xl font-black">{title}</h3><p className="mt-2 text-sm leading-6 text-slate-500">{body}</p></div>)}
+          </div>
+        </section>
+      </main>
+
+      <footer className="bg-[#0b1220] px-4 py-10 text-slate-400 sm:px-5 sm:py-12 lg:px-8">
+        <div className="mx-auto grid max-w-7xl gap-10 md:grid-cols-[1.4fr_1fr_1fr]">
+          <div>
+            <button type="button" onClick={handleFooterBrandClick} className="text-xl font-black tracking-[-0.06em] text-white">
+              BOOKSALOON
+            </button>
+            <p className="mt-3 max-w-xs text-sm leading-6">A calmer, clearer way to manage every salon visit.</p>
+          </div>
+          <div><p className="text-sm font-bold text-white">Explore</p><div className="mt-4 grid gap-2 text-sm"><a href="#services">Services</a><a href="#quick-turn">Quick Turn</a><a href="#how-it-works">How it works</a><a href="#offers">Offers</a></div></div>
+          <div><p className="text-sm font-bold text-white">Account</p><div className="mt-4 grid gap-2 text-sm"><button type="button" onClick={() => goToAuth('/login')} className="text-left">Login</button><button type="button" onClick={() => goToAuth('/register')} className="text-left">Register</button><span>Privacy & terms</span></div></div>
+        </div>
+        <div className="mx-auto mt-10 max-w-7xl border-t border-white/10 pt-5 text-xs">© 2026 BOOKSALOON. Salon details and offers are loaded per tenant.</div>
+      </footer>
+    </div>
+  )
+}
+
+function AppHeader({ title, subtitle, userName, onLogout }) {
+  const navigate = useNavigate()
+
+  return (
+    <header className="sticky top-0 z-30 border-b border-white/70 bg-white/70 backdrop-blur-xl">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
+        <Link
+          to="/customer/home"
+          aria-label="Go to the BOOKSALOON home screen"
+          className="flex items-center gap-3 text-left"
+        >
+          <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-900 text-white shadow-lg shadow-slate-900/20">
+            <Scissors size={18} />
+          </span>
+          <div>
+            <p className="text-lg font-black tracking-[-0.06em] text-slate-900">BOOKSALOON</p>
+            <p className="text-xs text-slate-500">{subtitle}</p>
+          </div>
+        </Link>
+
+        <div className="hidden items-center gap-3 md:flex">
+          <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+            {userName}
+          </div>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="inline-flex items-center gap-2 rounded-full border border-slate-200 px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-50"
+          >
+            <LogOut size={14} />
+            Logout
+          </button>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => navigate('/customer/home')}
+          className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 md:hidden"
+        >
+          <Menu size={18} />
+        </button>
+      </div>
+    </header>
+  )
+}
+
+function BottomNavigation() {
+  return (
+    <nav className="sticky bottom-0 z-40 border-t border-slate-200 bg-white/90 p-3 backdrop-blur-xl md:hidden">
+      <div className="mx-auto grid max-w-md grid-cols-5 gap-2">
+        {navItems.map(({ label, to }) => (
+          <NavLink
+            key={to}
+            to={to}
+            className={({ isActive }) =>
+              `flex flex-col items-center justify-center gap-1 rounded-2xl px-2 py-2 text-[11px] font-medium transition ${
+                isActive
+                  ? 'bg-gradient-to-r from-violet-600 to-indigo-500 text-white shadow-lg shadow-violet-500/30'
+                  : 'text-slate-500 hover:bg-slate-100'
+              }`
+            }
+          >
+            <span className="h-5 w-5">
+              {label === 'Home' && <Bell size={18} />}
+              {label === 'Explore' && <Search size={18} />}
+              {label === 'My Bookings' && <CalendarCheck2 size={18} />}
+              {label === 'Notifications' && <Bell size={18} />}
+              {label === 'Profile' && <UserRound size={18} />}
+            </span>
+            <span>{label}</span>
+          </NavLink>
+        ))}
+      </div>
+    </nav>
+  )
+}
+
+function LoadingScreen() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,#f5f3ff_0%,#f8fafc_35%,#edf2ff_100%)]">
+      <div className="flex flex-col items-center gap-4">
+        <div className="h-16 w-16 animate-spin rounded-full border-4 border-violet-200 border-t-violet-600" />
+        <div className="text-center">
+          <p className="text-lg font-bold tracking-[-0.08em] text-slate-900">BOOKSALOON</p>
+          <p className="text-sm text-slate-500">Loading your salon experience...</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function StatusBadge({ status }) {
+  const colorMap = {
+    Confirmed: 'bg-emerald-100 text-emerald-700',
+    Queued: 'bg-amber-100 text-amber-700',
+    Pending: 'bg-slate-200 text-slate-700',
+  }
+
+  return (
+    <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${colorMap[status] || 'bg-slate-200 text-slate-700'}`}>
+      {status}
+    </span>
+  )
+}
+
+function SalonCard({ salon, compact = false }) {
+  return (
+    <Link
+      to={`/customer/salon/${salon.id}`}
+      className={`group overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_18px_40px_rgba(15,23,42,0.06)] transition hover:-translate-y-1 ${compact ? 'p-2' : 'p-3'}`}
+    >
+      <div className="relative overflow-hidden rounded-[22px]">
+        <img src={salon.image} alt={salon.name} className="h-52 w-full object-cover transition duration-500 group-hover:scale-105" />
+        <div className="absolute inset-x-2 top-2 flex items-center justify-between">
+          <span className="rounded-full bg-white/85 px-2.5 py-1 text-[10px] font-semibold text-slate-700 backdrop-blur">
+            {salon.priceRange}
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-full bg-slate-900/85 px-2 py-1 text-[10px] font-semibold text-white">
+            <Star size={10} fill="currentColor" />
+            {salon.rating}
+          </span>
+        </div>
+      </div>
+      <div className="space-y-2 p-2 pb-1">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <h3 className="text-lg font-bold text-slate-900">{salon.name}</h3>
+            <p className="mt-1 flex items-center gap-1 text-sm text-slate-500">
+              <MapPin size={14} />
+              {salon.location}
+            </p>
+          </div>
+          <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-semibold text-violet-700">
+            {salon.distance}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <span>{salon.workingHours}</span>
+          <span className="mx-1 h-1 w-1 rounded-full bg-slate-300" />
+          <span>{salon.availableEmployees} stylists</span>
+        </div>
+        <div className="flex flex-wrap gap-2 pt-1">
+          {salon.features.slice(0, 2).map((feature) => (
+            <span key={feature} className="rounded-full bg-slate-100 px-2 py-1 text-[10px] text-slate-600">
+              {feature}
+            </span>
+          ))}
+        </div>
+      </div>
+    </Link>
+  )
+}
+
+function ServiceCard({ service }) {
+  return (
+    <div className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_14px_30px_rgba(15,23,42,0.04)]">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-base font-bold text-slate-900">{service.name}</p>
+          <p className="mt-1 text-sm text-slate-500">{service.description}</p>
+        </div>
+        <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-semibold text-violet-700">
+          {service.offers[0]}
+        </span>
+      </div>
+      <div className="mt-4 flex items-center justify-between text-sm text-slate-500">
+        <span>{service.duration} mins</span>
+        <span>{service.employees.length} experts</span>
+      </div>
+      <div className="mt-4 flex items-center justify-between">
+        <span className="text-xl font-black tracking-[-0.06em] text-slate-900">{formatCurrency(service.price)}</span>
+        <button type="button" className="rounded-full bg-slate-900 px-3 py-2 text-xs font-semibold text-white shadow-lg shadow-slate-900/15">
+          Add
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function BookingCard({ booking }) {
+  return (
+    <div className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_18px_30px_rgba(15,23,42,0.05)]">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <p className="text-lg font-bold tracking-[-0.04em] text-slate-900">{booking.service}</p>
+            <StatusBadge status={booking.status} />
+          </div>
+          <p className="mt-1 text-sm text-slate-500">{booking.salon}</p>
+        </div>
+        <p className="text-base font-bold text-slate-900">{booking.amount}</p>
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-3 text-sm text-slate-600">
+        <div>
+          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Barber</p>
+          <p className="mt-1 font-semibold text-slate-800">{booking.barber}</p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Chair</p>
+          <p className="mt-1 font-semibold text-slate-800">{booking.chair}</p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Date</p>
+          <p className="mt-1 font-semibold text-slate-800">{booking.date}</p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Booking ID</p>
+          <p className="mt-1 font-semibold text-slate-800">{booking.id}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NotificationCard({ notification }) {
+  return (
+    <div className="flex items-start gap-3 rounded-[22px] border border-slate-200 bg-white p-4 shadow-[0_16px_30px_rgba(15,23,42,0.04)]">
+      <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-violet-50 text-violet-600">
+        {notification.icon === 'bell' ? <Bell size={18} /> : notification.icon === 'clock' ? <Clock3 size={18} /> : <Sparkles size={18} />}
+      </div>
+      <div className="flex-1">
+        <div className="flex items-center justify-between gap-3">
+          <p className="font-semibold text-slate-900">{notification.title}</p>
+          <span className="text-[11px] text-slate-400">{notification.time}</span>
+        </div>
+        <p className="mt-1 text-sm text-slate-500">{notification.body}</p>
+      </div>
+    </div>
+  )
+}
+
+function ProfileCard({ user }) {
+  return (
+    <div className="rounded-[26px] border border-slate-200 bg-gradient-to-br from-slate-900 via-violet-900 to-indigo-950 p-5 text-white shadow-[0_24px_50px_rgba(79,70,229,0.3)]">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/15 text-lg font-bold">
+            {user.fullName.slice(0, 1)}
+          </div>
+          <div>
+            <p className="text-xl font-bold">{user.fullName}</p>
+            <p className="text-sm text-violet-100">{user.tier}</p>
+          </div>
+        </div>
+        <span className="rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold text-violet-100">
+          {user.points} pts
+        </span>
+      </div>
+
+      <div className="mt-6 grid grid-cols-2 gap-3 text-sm text-violet-100">
+        <div className="rounded-2xl bg-white/5 p-3">
+          <p className="text-violet-200">Phone</p>
+          <p className="mt-1 font-semibold text-white">{user.phone}</p>
+        </div>
+        <div className="rounded-2xl bg-white/5 p-3">
+          <p className="text-violet-200">Member since</p>
+          <p className="mt-1 font-semibold text-white">{user.memberSince}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ConfirmationDialog({ title, message, onClose, onConfirm }) {
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4"
+      >
+        <motion.div
+          initial={{ opacity: 0, y: 12, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 12, scale: 0.98 }}
+          className="w-full max-w-md rounded-[30px] border border-slate-200 bg-white p-6 shadow-[0_24px_70px_rgba(15,23,42,0.24)]"
+        >
+          <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-600">
+            <CheckCircle2 size={28} />
+          </div>
+          <h3 className="text-2xl font-black tracking-[-0.08em] text-slate-900">{title}</h3>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{message}</p>
+          <div className="mt-6 flex gap-3">
+            <SecondaryButton className="flex-1" onClick={onClose}>Close</SecondaryButton>
+            <PrimaryButton className="flex-1" onClick={onConfirm}>Confirm</PrimaryButton>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  )
+}
+
+function HomePage({ userName }) {
+  const { data: serviceList = serviceCatalog, isLoading } = useQuery({
+    queryKey: ['services-home'],
+    queryFn: async () => serviceCatalog,
+  })
+
+  const [selectedServices, setSelectedServices] = useState([])
+  const [isBookingOpen, setIsBookingOpen] = useState(false)
+  const [isPriority, setIsPriority] = useState(false)
+
+  if (isLoading) {
+    return <LoadingScreen />
+  }
+
+  const addService = (service) => {
+    setSelectedServices((current) => {
+      const exists = current.find((item) => item.id === service.id)
+      if (exists) {
+        return current.filter((item) => item.id !== service.id)
+      }
+      return [...current, { ...service }]
+    })
+  }
+
+  const total = selectedServices.reduce((sum, item) => sum + item.price, 0)
+  const totalWithPriority = total + (isPriority ? 50 : 0)
+
+  return (
+    <div className="space-y-6 pb-24">
+      <section className="rounded-[30px] bg-[radial-gradient(circle_at_top_left,#f5f3ff_0%,#eef2ff_35%,#ffffff_100%)] p-5 shadow-[0_18px_40px_rgba(79,70,229,0.08)] sm:p-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-slate-500">Good morning,</p>
+            <h1 className="mt-1 text-3xl font-black tracking-[-0.08em] text-slate-900">{userName}</h1>
+          </div>
+          <button type="button" className="relative flex h-11 w-11 items-center justify-center rounded-full bg-white text-slate-700 shadow-lg shadow-slate-200/80">
+            <Bell size={18} />
+            <span className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-rose-500" />
+          </button>
+        </div>
+
+        <div className="mt-6 flex gap-3 rounded-[24px] border border-slate-200 bg-white/80 p-3 shadow-inner shadow-slate-100">
+          <Search size={18} className="mt-1 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search services"
+            className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400"
+          />
+        </div>
+
+        <div className="mt-6">
+          <PrimaryButton
+            type="button"
+            onClick={() => {
+              if (selectedServices.length > 0) setIsBookingOpen(true)
+            }}
+            disabled={selectedServices.length === 0}
+            className={`w-full sm:py-4 ${selectedServices.length === 0 ? 'cursor-not-allowed opacity-50' : ''}`}
+          >
+            Book Appointment <ArrowRight size={16} />
+          </PrimaryButton>
+        </div>
+      </section>
+
+      <section>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-xl font-black tracking-[-0.06em] text-slate-900">Available services</h2>
+          <span className="text-sm text-slate-500">3 options</span>
+        </div>
+        <div className="grid gap-4 md:grid-cols-3">
+          {serviceList.map((service) => {
+            const selected = selectedServices.some((item) => item.id === service.id)
+            return (
+              <div key={service.id} className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_16px_32px_rgba(15,23,42,0.04)]">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-base font-bold text-slate-900">{service.name}</p>
+                    <p className="mt-1 text-sm text-slate-500">{service.description}</p>
+                  </div>
+                  <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-semibold text-violet-700">
+                    {service.offers[0]}
+                  </span>
+                </div>
+                <div className="mt-4 flex items-center justify-between text-sm text-slate-500">
+                  <span>{service.duration} mins</span>
+                  <span>{service.employees.length} experts</span>
+                </div>
+                <div className="mt-4 flex items-center justify-between">
+                  <span className="text-xl font-black tracking-[-0.06em] text-slate-900">₹{service.price}</span>
+                  <button
+                    type="button"
+                    onClick={() => addService(service)}
+                    className={`rounded-full px-3 py-2 text-xs font-semibold ${
+                      selected ? 'bg-emerald-500 text-white' : 'bg-slate-900 text-white'
+                    }`}
+                  >
+                    {selected ? 'Added' : 'Add'}
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </section>
+
+      {selectedServices.length > 0 && (
+        <section className="rounded-[30px] border border-violet-200 bg-gradient-to-r from-violet-50 to-indigo-50 p-5 shadow-[0_18px_40px_rgba(79,70,229,0.08)]">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.14em] text-violet-600">Selected services</p>
+              <h3 className="mt-1 text-2xl font-black tracking-[-0.06em] text-slate-900">Booking summary</h3>
+            </div>
+            <div className="rounded-full bg-white px-3 py-2 text-sm font-bold text-violet-700 shadow-sm">
+              Total ₹{totalWithPriority}
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-2">
+            {selectedServices.map((service) => (
+              <div key={service.id} className="flex items-center justify-between rounded-2xl bg-white/80 px-3 py-2 text-sm text-slate-700">
+                <span>{service.name}</span>
+                <span className="font-semibold">₹{service.price}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-4 flex items-center justify-between rounded-2xl bg-white/80 px-3 py-3 text-sm text-slate-700">
+            <span>Priority / Emergency</span>
+            <button
+              type="button"
+              onClick={() => setIsPriority((value) => !value)}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
+                isPriority ? 'bg-amber-500 text-white' : 'bg-slate-100 text-slate-700'
+              }`}
+            >
+              {isPriority ? 'Added +₹50' : 'Add ₹50'}
+            </button>
+          </div>
+
+          <div className="mt-4 flex justify-end">
+            <PrimaryButton type="button" onClick={() => setIsBookingOpen(true)}>
+              Confirm booking
+            </PrimaryButton>
+          </div>
+          <p className="mt-3 rounded-2xl bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800">
+            Please reach the salon 5 minutes before your appointment time. Once your turn is called, you have 10 minutes to arrive; otherwise, your seat may be given to another customer.
+          </p>
+        </section>
+      )}
+
+      {isBookingOpen && (
+        <ConfirmationDialog
+          title="Appointment booked"
+          message={`Your appointment is confirmed for ${selectedServices.map((service) => service.name).join(', ')}. Please reach 5 minutes before your appointment time. When your turn is called, you must arrive within 10 minutes or the seat may be given to another customer. ${isPriority ? 'Priority / Emergency has been added for ₹50 extra.' : 'No priority option selected.'}`}
+          onClose={() => setIsBookingOpen(false)}
+          onConfirm={() => {
+            setIsBookingOpen(false)
+            setSelectedServices([])
+            setIsPriority(false)
+          }}
+        />
+      )}
+
+      <section>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-xl font-black tracking-[-0.06em] text-slate-900">Offers</h2>
+        </div>
+        <div className="grid gap-3 md:grid-cols-3 blur-sm">
+          {offers.map((offer) => (
+            <div key={offer.title} className="rounded-[24px] border border-violet-100 bg-gradient-to-br from-violet-50 via-white to-indigo-50 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <span className="rounded-full bg-violet-600 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-white">
+                  {offer.badge}
+                </span>
+                <Sparkles size={16} className="text-violet-600" />
+              </div>
+              <p className="text-lg font-black tracking-[-0.06em] text-slate-900">{offer.title}</p>
+              <p className="mt-2 text-2xl font-black tracking-[-0.08em] text-violet-700">{offer.discount}</p>
+              <p className="mt-2 text-sm text-slate-600">{offer.desc}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-xl font-black tracking-[-0.06em] text-slate-900">Upcoming appointments</h2>
+        </div>
+        <div className="grid gap-4 md:grid-cols-3">
+          {bookings.map((booking) => (
+            <BookingCard key={booking.id} booking={booking} />
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function ExplorePage() {
+  const [search, setSearch] = useState('')
+  const [location, setLocation] = useState('Any area')
+  const [serviceFilter, setServiceFilter] = useState('All services')
+  const [priceFilter, setPriceFilter] = useState('Any price')
+
+  const filteredSalons = useMemo(() => {
+    return salons.filter((salon) => {
+      const matchesSearch = salon.name.toLowerCase().includes(search.toLowerCase()) || salon.location.toLowerCase().includes(search.toLowerCase())
+      const matchesLocation = location === 'Any area' || salon.location === location
+      const matchesService = serviceFilter === 'All services' || salon.serviceIds.includes(serviceFilter)
+      const matchesPrice =
+        priceFilter === 'Any price' ||
+        (priceFilter === 'Under ₹500' && salon.priceRange === '₹₹') ||
+        (priceFilter === '₹500-₹1500' && salon.priceRange === '₹₹₹')
+
+      return matchesSearch && matchesLocation && matchesService && matchesPrice
+    })
+  }, [search, location, serviceFilter, priceFilter])
+
+  return (
+    <div className="space-y-5 pb-24">
+      <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_16px_30px_rgba(15,23,42,0.04)]">
+        <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+          <Search size={18} className="text-slate-400" />
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search salons"
+            className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400"
+          />
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <select value={location} onChange={(event) => setLocation(event.target.value)} className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 outline-none">
+            <option>Any area</option>
+            <option>Banjara Hills</option>
+            <option>Madhapur</option>
+            <option>Gachibowli</option>
+          </select>
+          <select value={serviceFilter} onChange={(event) => setServiceFilter(event.target.value)} className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 outline-none">
+            <option>All services</option>
+            <option>haircut</option>
+            <option>shave-trim-beards</option>
+            <option>head-massage</option>
+          </select>
+          <select value={priceFilter} onChange={(event) => setPriceFilter(event.target.value)} className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 outline-none">
+            <option>Any price</option>
+            <option>Under ₹500</option>
+            <option>₹500-₹1500</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {filteredSalons.map((salon) => (
+          <SalonCard key={salon.id} salon={salon} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function BookingsPage() {
+  return (
+    <div className="space-y-4 pb-24">
+      {bookings.map((booking) => (
+        <BookingCard key={booking.id} booking={booking} />
+      ))}
+    </div>
+  )
+}
+
+function NotificationsPage() {
+  return (
+    <div className="space-y-4 pb-24">
+      {notifications.map((notification) => (
+        <NotificationCard key={notification.title} notification={notification} />
+      ))}
+    </div>
+  )
+}
+
+function ProfilePage({ user }) {
+  return (
+    <div className="space-y-5 pb-24">
+      <ProfileCard user={user} />
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_16px_32px_rgba(15,23,42,0.04)]">
+          <div className="flex items-center justify-between">
+            <p className="text-lg font-bold text-slate-900">Saved details</p>
+            <ShieldCheck className="text-emerald-600" size={18} />
+          </div>
+          <ul className="mt-4 space-y-3 text-sm text-slate-600">
+            <li className="flex items-center justify-between">
+              <span>Phone number</span>
+              <span className="font-semibold text-slate-800">+91 98765 43210</span>
+            </li>
+            <li className="flex items-center justify-between">
+              <span>Preferred salon</span>
+              <span className="font-semibold text-slate-800">Velvet Studio</span>
+            </li>
+            <li className="flex items-center justify-between">
+              <span>Default payment</span>
+              <span className="font-semibold text-slate-800">UPI</span>
+            </li>
+          </ul>
+        </div>
+
+        <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_16px_32px_rgba(15,23,42,0.04)]">
+          <div className="flex items-center justify-between">
+            <p className="text-lg font-bold text-slate-900">Membership</p>
+            <WalletCards className="text-violet-600" size={18} />
+          </div>
+          <div className="mt-4 rounded-2xl bg-gradient-to-r from-violet-600 via-indigo-500 to-fuchsia-500 p-4 text-white">
+            <p className="text-sm text-violet-100">Gold Member</p>
+            <p className="mt-2 text-2xl font-black tracking-[-0.08em]">1,480 pts</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SalonDetailPage() {
+  const { salonId } = useParams()
+  const salon = salons.find((entry) => entry.id === salonId) || salons[0]
+  const salonServices = serviceCatalog.filter((service) => salon.serviceIds.includes(service.id))
+
+  return (
+    <div className="space-y-5 pb-24">
+      <div className="overflow-hidden rounded-[30px] border border-slate-200 bg-white shadow-[0_18px_30px_rgba(15,23,42,0.05)]">
+        <img src={salon.image} alt={salon.name} className="h-64 w-full object-cover" />
+        <div className="p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-2xl font-black tracking-[-0.08em] text-slate-900">{salon.name}</p>
+              <p className="mt-1 flex items-center gap-1 text-sm text-slate-500">
+                <MapPin size={14} />
+                {salon.location}, {salon.city}
+              </p>
+            </div>
+            <span className="inline-flex items-center gap-1 rounded-full bg-violet-50 px-3 py-1.5 text-xs font-semibold text-violet-700">
+              <Star size={12} fill="currentColor" />
+              {salon.rating}
+            </span>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl bg-slate-50 p-3">
+              <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Hours</p>
+              <p className="mt-2 text-sm font-semibold text-slate-900">{salon.workingHours}</p>
+            </div>
+            <div className="rounded-2xl bg-slate-50 p-3">
+              <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Chairs</p>
+              <p className="mt-2 text-sm font-semibold text-slate-900">{salon.availableChairs} available</p>
+            </div>
+            <div className="rounded-2xl bg-slate-50 p-3">
+              <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Queue</p>
+              <p className="mt-2 text-sm font-semibold text-slate-900">{salon.queue} in line</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_16px_30px_rgba(15,23,42,0.04)]">
+        <h3 className="text-xl font-black tracking-[-0.06em] text-slate-900">Available services</h3>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {salonServices.map((service) => (
+            <ServiceCard key={service.id} service={service} />
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AdminLogin({ onLogin }) {
+  const [phoneDigits, setPhoneDigits] = useState('')
+  const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [message, setMessage] = useState('')
+  const navigate = useNavigate()
+  const location = useLocation()
+
+  const handleSubmit = async (event) => {
+    event.preventDefault()
+    setMessage('')
+
+    try {
+      validateIndianPhone(phoneDigits)
+      if (!password || password.length < 6) {
+        throw new Error('Password must be at least 6 characters long.')
+      }
+
+      setSubmitting(true)
+      await onLogin({ phone: formatIndianPhone(phoneDigits), password })
+      navigate('/admin/dashboard', { replace: true })
+    } catch (error) {
+      setMessage(error.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,#f5f3ff_0%,#eef2ff_30%,#f8fafc_100%)] p-5">
+      <div className="w-full max-w-md rounded-[32px] border border-slate-200 bg-white/90 p-6 shadow-[0_30px_80px_rgba(99,102,241,0.15)] backdrop-blur-sm">
+        <div className="mb-6 text-center">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-gradient-to-br from-violet-600 via-indigo-500 to-fuchsia-500 text-white shadow-[0_18px_40px_rgba(124,58,237,0.35)]">
+            <Scissors size={28} />
+          </div>
+          <p className="mt-4 text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">Premium salon booking</p>
+          <h1 className="mt-2 text-4xl font-black tracking-[-0.09em] text-slate-900">BOOKSALOON</h1>
+          {location.state?.reason && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-700">{location.state.reason}</p>}
+        </div>
+
+        <form className="space-y-4" onSubmit={handleSubmit}>
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">Mobile number</label>
+            <div className="flex overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 focus-within:border-violet-400">
+              <span className="flex items-center border-r border-slate-200 px-4 text-sm font-semibold text-slate-600">+91</span>
+              <input
+                type="tel"
+                inputMode="numeric"
+                value={phoneDigits}
+                maxLength={10}
+                onChange={(event) => setPhoneDigits(event.target.value.replace(/\D/g, '').slice(0, 10))}
+                className="min-w-0 flex-1 bg-transparent px-4 py-3 text-sm outline-none"
+                placeholder="98765 43210"
+                aria-label="10-digit mobile number"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">Password</label>
+            <div className="flex items-center rounded-2xl border border-slate-200 bg-slate-50 pr-3 focus-within:border-violet-400">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                className="min-w-0 flex-1 bg-transparent px-4 py-3 text-sm outline-none"
+                placeholder="Enter your password"
+              />
+              <button type="button" onClick={() => setShowPassword((value) => !value)} className="text-slate-500" aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
+              </button>
+            </div>
+          </div>
+          {message && <p className="rounded-2xl bg-rose-50 px-3 py-2 text-sm text-rose-600">{message}</p>}
+          <PrimaryButton type="submit" className="w-full py-3.5" disabled={submitting}>
+            {submitting ? 'Please wait...' : 'Login to BOOKSALOON'}
+          </PrimaryButton>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function AdminControls({ section, selectedSalonId, onSalonCreated }) {
+  const [form, setForm] = useState({})
+  const [message, setMessage] = useState('')
+  const queryClient = useQueryClient()
+  const tableBySection = {
+    'Services & Pricing': 'services',
+    'Staff Management': 'employees',
+    'Business Hours': 'salon_hours',
+    'Waiting Time Settings': 'salon_settings',
+    Appointments: 'bookings',
+    Notifications: 'notifications',
+  }
+  const table = tableBySection[section]
+  const query = useQuery({
+    queryKey: ['admin-control', section, selectedSalonId],
+    enabled: Boolean(selectedSalonId && table),
+    queryFn: async () => {
+      let request = supabase.from(table).select('*')
+      if (table === 'notifications') {
+        request = request.eq('salon_id', selectedSalonId).order('created_at', { ascending: false })
+      } else if (table === 'salon_settings') {
+        request = request.eq('salon_id', selectedSalonId).order('setting_key')
+      } else if (table === 'salon_hours') {
+        request = request.eq('salon_id', selectedSalonId).order('day_of_week')
+      } else {
+        request = request.eq('salon_id', selectedSalonId).order('created_at', { ascending: false })
+      }
+      const { data, error } = await request
+      if (error) throw new Error(error.message)
+      return data || []
+    },
+  })
+
+  useEffect(() => {
+    if (!selectedSalonId || !table) return undefined
+    const channel = supabase
+      .channel(`admin-${table}-${selectedSalonId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table, filter: `salon_id=eq.${selectedSalonId}` }, () => {
+        queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })
+      })
+      .subscribe()
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [queryClient, section, selectedSalonId, table])
+
+  const updateForm = (key, value) => setForm((current) => ({ ...current, [key]: value }))
+  const save = async (event) => {
+    event.preventDefault()
+    setMessage('')
+    try {
+      let payload
+      if (section === 'Services & Pricing') {
+        if (!form.name?.trim() || Number(form.price) < 0 || Number(form.duration_minutes) <= 0) {
+          throw new Error('Enter a service name, valid price, and duration.')
+        }
+        payload = {
+          salon_id: selectedSalonId,
+          name: form.name.trim(),
+          description: form.description?.trim() || null,
+          price_paise: Math.round(Number(form.price) * 100),
+          duration_minutes: Number(form.duration_minutes),
+          is_active: form.is_active !== false,
+        }
+      } else if (section === 'Staff Management') {
+        if (!form.employee_name?.trim() || !/^[6-9]\d{9}$/.test(form.phone || '')) throw new Error('Enter a valid staff name and 10-digit mobile number.')
+        payload = { salon_id: selectedSalonId, employee_name: form.employee_name.trim(), phone: `+91${form.phone}`, status: form.status || 'ACTIVE' }
+      } else if (section === 'Business Hours') {
+        payload = {
+          salon_id: selectedSalonId,
+          day_of_week: Number(form.day_of_week || 1),
+          opening_time: form.is_closed ? null : form.opening_time,
+          closing_time: form.is_closed ? null : form.closing_time,
+          is_closed: Boolean(form.is_closed),
+        }
+      } else if (section === 'Waiting Time Settings') {
+        if (Number(form.average_service_minutes) <= 0) throw new Error('Average service time must be greater than zero.')
+        payload = { salon_id: selectedSalonId, setting_key: 'average_service_minutes', setting_value: { minutes: Number(form.average_service_minutes) } }
+      } else {
+        throw new Error('Choose a supported admin setting.')
+      }
+
+      const existingId = form.id
+      const request = section === 'Business Hours' || section === 'Waiting Time Settings'
+        ? supabase.from(table).upsert(payload, { onConflict: section === 'Business Hours' ? 'salon_id,day_of_week' : 'salon_id,setting_key' })
+        : existingId
+        ? supabase.from(table).update(payload).eq('id', existingId).eq('salon_id', selectedSalonId)
+        : supabase.from(table).insert(payload)
+      const { error } = await request
+      if (error) throw new Error(error.message)
+      setForm({})
+      setMessage('Saved successfully.')
+      queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })
+    } catch (error) {
+      setMessage(error.message)
+    }
+  }
+
+  const updateStatus = async (row, status) => {
+    if (section === 'Appointments' && status === 'CANCELLED') {
+      const { error } = await supabase.rpc('admin_cancel_booking', { p_booking_id: row.id })
+      if (error) setMessage(error.message)
+      else queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })
+      return
+    }
+    const { error } = await supabase.from(table).update({ status }).eq('id', row.id).eq('salon_id', selectedSalonId)
+    if (error) setMessage(error.message)
+    else queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })
+  }
+
+  const edit = (row) => {
+    if (section === 'Services & Pricing') setForm({ ...row, price: row.price_paise / 100 })
+    else if (section === 'Waiting Time Settings') setForm({ ...row, average_service_minutes: row.setting_value?.minutes || '' })
+    else setForm(row)
+  }
+
+  const renderForm = () => {
+    if (section === 'Services & Pricing') {
+      return <div className="grid gap-3 md:grid-cols-2">
+        <input value={form.name || ''} onChange={(event) => updateForm('name', event.target.value)} placeholder="Service name" className="rounded-xl border p-3 text-sm" />
+        <input type="number" min="0" step="0.01" value={form.price || ''} onChange={(event) => updateForm('price', event.target.value)} placeholder="Price (₹)" className="rounded-xl border p-3 text-sm" />
+        <input type="number" min="1" value={form.duration_minutes || ''} onChange={(event) => updateForm('duration_minutes', event.target.value)} placeholder="Duration (minutes)" className="rounded-xl border p-3 text-sm" />
+        <input value={form.description || ''} onChange={(event) => updateForm('description', event.target.value)} placeholder="Description" className="rounded-xl border p-3 text-sm" />
+      </div>
+    }
+    if (section === 'Staff Management') {
+      return <div className="grid gap-3 md:grid-cols-2">
+        <input value={form.employee_name || ''} onChange={(event) => updateForm('employee_name', event.target.value)} placeholder="Staff full name" className="rounded-xl border p-3 text-sm" />
+        <input value={form.phone || ''} maxLength={10} onChange={(event) => updateForm('phone', event.target.value.replace(/\D/g, ''))} placeholder="Mobile number" className="rounded-xl border p-3 text-sm" />
+      </div>
+    }
+    if (section === 'Business Hours') {
+      return <div className="grid gap-3 md:grid-cols-4">
+        <select value={form.day_of_week || 1} onChange={(event) => updateForm('day_of_week', event.target.value)} className="rounded-xl border p-3 text-sm">{['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((day, index) => <option key={day} value={index}>{day}</option>)}</select>
+        <input type="time" value={form.opening_time || ''} onChange={(event) => updateForm('opening_time', event.target.value)} disabled={form.is_closed} className="rounded-xl border p-3 text-sm" />
+        <input type="time" value={form.closing_time || ''} onChange={(event) => updateForm('closing_time', event.target.value)} disabled={form.is_closed} className="rounded-xl border p-3 text-sm" />
+        <label className="flex items-center gap-2 rounded-xl border p-3 text-sm"><input type="checkbox" checked={Boolean(form.is_closed)} onChange={(event) => updateForm('is_closed', event.target.checked)} /> Closed</label>
+      </div>
+    }
+    if (section === 'Waiting Time Settings') {
+      return <input type="number" min="1" value={form.average_service_minutes || ''} onChange={(event) => updateForm('average_service_minutes', event.target.value)} placeholder="Average service minutes" className="rounded-xl border p-3 text-sm" />
+    }
+    return null
+  }
+
+  if (!selectedSalonId) {
+    const createDemoSalon = async () => {
+      setMessage('')
+      const { data: authData, error: authError } = await supabase.auth.getUser()
+      if (authError || !authData.user) {
+        setMessage('Your Supabase admin session is not available. Please log in again.')
+        return
+      }
+
+      const { error } = await supabase.from('salons').insert({
+        created_by: authData.user.id,
+        name: 'BOOKSALOON Demo Salon',
+        slug: 'booksaloon-demo-salon',
+        description: 'The primary salon managed from the BOOKSALOON admin workspace.',
+        status: 'ACTIVE',
+        country_code: 'IN',
+      })
+      if (error) {
+        setMessage(error.message)
+        return
+      }
+
+      setMessage('Salon created successfully.')
+      onSalonCreated()
+    }
+
+    return <section className="rounded-[28px] border border-slate-200 bg-white p-8 text-center shadow-sm">
+      <h2 className="text-xl font-black tracking-[-0.06em]">Set up your salon</h2>
+      <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">Create the primary salon for this admin workspace. Services, staff, hours, and appointments will be managed here.</p>
+      <PrimaryButton type="button" onClick={createDemoSalon} className="mt-5">Create salon</PrimaryButton>
+      {message && <p className="mt-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-600">{message}</p>}
+    </section>
+  }
+  if (section === 'Settings') return <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">Global admin settings are managed securely by the platform configuration.</p>
+  if (section === 'Dashboard') return null
+
+  return <section className="space-y-5">
+    <div className="flex flex-col gap-3 rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+      <p className="text-sm font-semibold text-slate-700">Managing the connected salon</p>
+      {!['Appointments', 'Notifications'].includes(section) && <form onSubmit={save} className="flex flex-1 flex-col gap-3 sm:flex-row sm:justify-end">{renderForm()}<PrimaryButton type="submit">{form.id ? 'Update' : 'Save'}</PrimaryButton></form>}
+    </div>
+    {message && <p className="rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-700">{message}</p>}
+    {query.isLoading && <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">Loading...</p>}
+    {query.isError && <p className="rounded-2xl bg-rose-50 p-4 text-sm text-rose-600">{query.error.message}</p>}
+    {!query.isLoading && !query.isError && query.data?.length === 0 && <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">No records found.</p>}
+    <div className="grid gap-3">
+      {query.data?.map((row) => (
+        <div key={row.id} className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-semibold">{row.name || row.employee_name || row.setting_key || row.booking_number || row.title || 'Record'}</p>
+            <p className="text-sm text-slate-500">
+              {section === 'Services & Pricing' && `₹${(row.price_paise / 100).toLocaleString('en-IN')} • ${row.duration_minutes} min`}
+              {section === 'Staff Management' && `${row.phone || 'No phone'} • ${row.status}`}
+              {section === 'Business Hours' && `${row.opening_time || '--'} - ${row.closing_time || '--'} • ${row.is_closed ? 'Closed' : 'Open'}`}
+              {section === 'Waiting Time Settings' && `${row.setting_value?.minutes || '--'} minutes`}
+              {section === 'Appointments' && `${row.status} • ${new Date(row.scheduled_start).toLocaleString()}`}
+              {section === 'Notifications' && row.message}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            {['Services & Pricing', 'Staff Management', 'Business Hours', 'Waiting Time Settings'].includes(section) && <button type="button" onClick={() => edit(row)} className="rounded-full border px-3 py-2 text-xs font-semibold">Edit</button>}
+            {(section === 'Services & Pricing' || section === 'Staff Management' || section === 'Appointments') && <select value={row.status || (row.is_active ? 'ACTIVE' : 'INACTIVE')} onChange={(event) => section === 'Services & Pricing' ? supabase.from(table).update({ is_active: event.target.value === 'ACTIVE' }).eq('id', row.id).then(() => queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })) : updateStatus(row, event.target.value)} className="rounded-full border px-3 py-2 text-xs"><option value="PENDING">Pending</option><option value="WAITING">Waiting</option><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option><option value="ON_LEAVE">On leave</option><option value="CONFIRMED">Confirmed</option><option value="IN_PROGRESS">In progress</option><option value="COMPLETED">Completed</option><option value="CANCELLED">Cancelled</option><option value="NO_SHOW">No show</option></select>}
+            {section === 'Notifications' && !row.is_read && <button type="button" onClick={async () => { const { error } = await supabase.from('notifications').update({ is_read: true, read_at: new Date().toISOString() }).eq('id', row.id); if (error) setMessage(error.message); else queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] }) }} className="rounded-full border px-3 py-2 text-xs font-semibold">Mark read</button>}
+          </div>
+        </div>
+      ))}
+    </div>
+  </section>
+}
+
+function AdminDashboard({ onLogout }) {
+  const [checkingSession, setCheckingSession] = useState(true)
+  const [activeSection, setActiveSection] = useState('Dashboard')
+  const [selectedSalonId, setSelectedSalonId] = useState('')
+  const navigate = useNavigate()
+  const salonsQuery = useQuery({
+    queryKey: ['admin-salons'],
+    enabled: !checkingSession && isSupabaseConfigured,
+    queryFn: async () => {
+      const { data, error } = await supabase.from('salons').select('id, name').order('created_at', { ascending: true }).limit(1)
+      if (error) throw new Error(error.message)
+      return data || []
+    },
+  })
+  const salonsList = salonsQuery.data || []
+
+  useEffect(() => {
+    if (!selectedSalonId && salonsList[0]?.id) setSelectedSalonId(salonsList[0].id)
+  }, [salonsList, selectedSalonId])
+  const queueQuery = useQuery({
+    queryKey: ['admin-live-queue'],
+    enabled: !checkingSession && isSupabaseConfigured,
+    refetchInterval: 15000,
+    queryFn: async () => {
+      const { error: expiryError } = await supabase.rpc('expire_overdue_queue_entries')
+      if (expiryError) {
+        throw new Error(expiryError.message)
+      }
+      const today = new Date().toISOString().slice(0, 10)
+      const { data, error } = await supabase
+        .from('queue_entries')
+        .select('id, queue_number, estimated_wait_minutes, estimated_start_at, status, customer:profiles!queue_entries_customer_id_fkey(full_name, phone), salon:salons(name), booking:bookings(booking_number, scheduled_start)')
+        .eq('queue_date', today)
+        .in('status', ['WAITING', 'CALLED', 'SERVING'])
+        .order('queue_number', { ascending: true })
+
+      if (error) {
+        throw new Error(error.message)
+      }
+      return data || []
+    },
+  })
+
+  useEffect(() => {
+    let active = true
+    validateAdminSession().then((isValid) => {
+      if (!active) return
+      if (!isValid) {
+        navigate('/admin/login', {
+          replace: true,
+          state: { reason: 'Your admin session was ended because another device logged in.' },
+        })
+      }
+      setCheckingSession(false)
+    })
+    return () => {
+      active = false
+    }
+  }, [navigate])
+
+  if (checkingSession) {
+    return <div className="flex min-h-screen items-center justify-center bg-slate-100 text-sm text-slate-500">Checking admin session...</div>
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-100 text-slate-900 md:flex">
+      <aside className="w-full bg-[#0b1220] p-5 text-white md:min-h-screen md:w-64 md:shrink-0">
+        <p className="text-lg font-black tracking-[-0.06em]">BOOKSALOON</p>
+        <p className="mt-1 text-[10px] uppercase tracking-[0.18em] text-slate-400">Admin workspace</p>
+        <nav className="mt-8 grid gap-2 text-sm">
+          {['Dashboard', 'Services & Pricing', 'Staff Management', 'Business Hours', 'Waiting Time Settings', 'Appointments', 'Notifications', 'Settings'].map((item) => (
+            <button key={item} type="button" onClick={() => setActiveSection(item)} className={`rounded-xl px-3 py-2.5 text-left ${activeSection === item ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white'}`}>
+              {item}
+            </button>
+          ))}
+        </nav>
+        <button type="button" onClick={onLogout} className="mt-8 inline-flex items-center gap-2 text-sm text-slate-400 hover:text-white">
+          <LogOut size={15} /> Logout
+        </button>
+      </aside>
+
+      <main className="min-w-0 flex-1 p-5 sm:p-8">
+        <div className="mx-auto max-w-6xl">
+          <header className="mb-6 flex flex-col gap-4 rounded-[26px] border border-slate-200 bg-white p-5 shadow-[0_20px_40px_rgba(15,23,42,0.04)] md:flex-row md:items-center md:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-violet-600">BOOKSALOON Admin</p>
+            <h1 className="mt-2 text-3xl font-black tracking-[-0.08em]">{activeSection}</h1>
+          </div>
+          <PrimaryButton onClick={() => navigate('/customer/home')}>Go to customer app</PrimaryButton>
+        </header>
+
+        {activeSection === 'Dashboard' ? (
+          <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_40px_rgba(15,23,42,0.04)]">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-black tracking-[-0.06em]">Live customers queue</h2>
+                    <p className="mt-1 text-sm text-slate-500">Active customers for today, loaded from Supabase.</p>
+              </div>
+              <button type="button" onClick={() => queueQuery.refetch()} className="rounded-full border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50">
+                Refresh
+              </button>
+            </div>
+            {!isSupabaseConfigured && <p className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-700">Connect Supabase to view the live queue.</p>}
+            {queueQuery.isLoading && <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">Loading live queue...</p>}
+            {queueQuery.isError && <p className="rounded-2xl bg-rose-50 p-4 text-sm text-rose-600">{queueQuery.error.message}</p>}
+            {!queueQuery.isLoading && !queueQuery.isError && isSupabaseConfigured && queueQuery.data?.length === 0 && (
+              <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">No customers are currently waiting.</p>
+            )}
+            <div className="space-y-3">
+              {queueQuery.data?.map((entry) => (
+                <div key={entry.id} className="flex items-center justify-between rounded-[22px] bg-slate-50 p-4">
+                  <div>
+                    <p className="font-semibold text-slate-900">{entry.customer?.full_name || 'Customer'}</p>
+                    <p className="text-sm text-slate-500">{entry.customer?.phone || 'No phone number'} • {entry.salon?.name || 'Salon'}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold text-slate-900">Queue {entry.queue_number}</p>
+                    <p className="text-xs capitalize text-slate-500">{entry.status.toLowerCase()} {entry.estimated_wait_minutes == null ? '' : `• ${entry.estimated_wait_minutes} min wait`}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : (
+          <AdminControls
+            section={activeSection}
+            selectedSalonId={selectedSalonId}
+            onSalonCreated={() => salonsQuery.refetch()}
+          />
+        )}
+        </div>
+      </main>
+    </div>
+  )
+}
+
+function AuthPage({ mode, setMode, onLogin, onRegister }) {
+  const [fullName, setFullName] = useState('')
+  const [phoneDigits, setPhoneDigits] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [acceptedTerms, setAcceptedTerms] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [message, setMessage] = useState('')
+  const navigate = useNavigate()
+  const location = useLocation()
+  const returnPath = location.state?.from || '/customer/home'
+
+  const handleSubmit = async (event) => {
+    event.preventDefault()
+    setSubmitting(true)
+    setMessage('')
+
+    try {
+      if (mode === 'register') {
+        if (!fullName.trim()) {
+          throw new Error('Please enter your full name.')
+        }
+        if (!acceptedTerms) {
+          throw new Error('Please accept the terms to continue.')
+        }
+        if (password !== confirmPassword) {
+          throw new Error('Passwords do not match.')
+        }
+
+        const result = await onRegister({ fullName: fullName.trim(), phone: formatIndianPhone(phoneDigits), password })
+        if (result?.success) {
+          navigate(returnPath, { replace: true })
+          return
+        }
+      } else {
+        const result = await onLogin({ phone: formatIndianPhone(phoneDigits), password })
+        if (result?.success) {
+          navigate(returnPath, { replace: true })
+          return
+        }
+      }
+
+      setMessage('Authentication failed. Please try again.')
+    } catch (error) {
+      setMessage(error.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,#f5f3ff_0%,#eef2ff_30%,#f8fafc_100%)] p-5">
+      <div className="w-full max-w-md rounded-[32px] border border-slate-200 bg-white/90 p-6 shadow-[0_30px_80px_rgba(99,102,241,0.15)] backdrop-blur-sm">
+        <div className="mb-6 text-center">
+          <Link
+            to="/"
+            aria-label="Go to the BOOKSALOON landing page"
+            className="mx-auto block w-fit rounded-3xl"
+          >
+            <div className="flex h-16 w-16 items-center justify-center rounded-3xl bg-gradient-to-br from-violet-600 via-indigo-500 to-fuchsia-500 text-white shadow-[0_18px_40px_rgba(124,58,237,0.35)]">
+              <Scissors size={28} />
+            </div>
+            <p className="mt-4 text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">Premium salon booking</p>
+            <h1 className="mt-2 text-4xl font-black tracking-[-0.09em] text-slate-900">BOOKSALOON</h1>
+          </Link>
+        </div>
+
+        <div className="mb-5 flex rounded-full bg-slate-100 p-1">
+          <button
+            type="button"
+            onClick={() => setMode('login')}
+            className={`flex-1 rounded-full px-4 py-2.5 text-sm font-semibold transition ${mode === 'login' ? 'bg-white text-slate-900 shadow' : 'text-slate-500'}`}
+          >
+            Login
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('register')}
+            className={`flex-1 rounded-full px-4 py-2.5 text-sm font-semibold transition ${mode === 'register' ? 'bg-white text-slate-900 shadow' : 'text-slate-500'}`}
+          >
+            Register
+          </button>
+        </div>
+
+        <form className="space-y-4" onSubmit={handleSubmit}>
+          {mode === 'register' && (
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Full name</label>
+              <input
+                type="text"
+                value={fullName}
+                onChange={(event) => setFullName(event.target.value)}
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-violet-400 focus:bg-white"
+                placeholder="John Doe"
+              />
+            </div>
+          )}
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">Mobile number</label>
+            <div className="flex overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 transition focus-within:border-violet-400 focus-within:bg-white">
+              <span className="flex items-center border-r border-slate-200 px-4 text-sm font-semibold text-slate-600">+91</span>
+              <input
+                type="tel"
+                inputMode="numeric"
+                value={phoneDigits}
+                maxLength={10}
+                onChange={(event) => setPhoneDigits(event.target.value.replace(/\D/g, '').slice(0, 10))}
+                className="min-w-0 flex-1 bg-transparent px-4 py-3 text-sm outline-none"
+                placeholder="98765 43210"
+                aria-label="10-digit mobile number"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-sm font-medium text-slate-700">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-violet-400 focus:bg-white"
+              placeholder="Enter your password"
+            />
+          </div>
+
+          {mode === 'register' && (
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Confirm password</label>
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-violet-400 focus:bg-white"
+                placeholder="Repeat password"
+              />
+            </div>
+          )}
+
+          {mode === 'register' && (
+            <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+              <input
+                type="checkbox"
+                checked={acceptedTerms}
+                onChange={(event) => setAcceptedTerms(event.target.checked)}
+                className="mt-1 h-4 w-4 accent-violet-600"
+              />
+              <span>I accept the terms and conditions and understand that this app uses password authentication with my Indian mobile number.</span>
+            </label>
+          )}
+
+          {message && <p className="rounded-2xl bg-rose-50 px-3 py-2 text-sm text-rose-600">{message}</p>}
+
+          <PrimaryButton type="submit" className="w-full py-3.5" disabled={submitting}>
+            {submitting ? 'Please wait...' : mode === 'login' ? 'Login to BOOKSALOON' : 'Create account'}
+          </PrimaryButton>
+        </form>
+
+        {mode === 'login' && (
+          <div className="mt-5 text-center text-sm text-slate-500">
+            Forgot password? <button type="button" className="font-semibold text-violet-700">Reset securely</button>
+          </div>
+        )}
+
+      </div>
+    </div>
+  )
+}
+
+function CustomerApp({ user, onLogout }) {
+  return (
+    <div className="min-h-screen bg-[#f5f7fb] text-slate-900">
+      <AppHeader title="BOOKSALOON" subtitle="Premium salon booking" userName={user.fullName} onLogout={onLogout} />
+      <main className="mx-auto max-w-6xl px-4 py-5 sm:px-6 lg:px-8">
+        <Routes>
+          <Route index element={<Navigate to="home" replace />} />
+          <Route path="home" element={<HomePage userName={user.fullName} />} />
+          <Route path="explore" element={<ExplorePage />} />
+          <Route path="bookings" element={<BookingsPage />} />
+          <Route path="notifications" element={<NotificationsPage />} />
+          <Route path="profile" element={<ProfilePage user={user} />} />
+          <Route path="salon/:salonId" element={<SalonDetailPage />} />
+        </Routes>
+      </main>
+      <BottomNavigation />
+    </div>
+  )
+}
+
+function App() {
+  const [mode, setMode] = useState('login')
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false)
+  const [currentUser, setCurrentUser] = useState({ ...customerProfile, fullName: 'Aarav Sharma' })
+
+  const onLogin = async ({ phone, password }) => {
+    validateIndianPhone(phone.replace(/^\+91/, ''))
+
+    if (!password || password.length < 6) {
+      throw new Error('Password must be at least 6 characters long.')
+    }
+
+    if (isSupabaseConfigured) {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: getAuthEmail(phone),
+        password,
+      })
+      if (error) {
+        throw new Error(error.message)
+      }
+    }
+
+    setCurrentUser((previous) => ({ ...previous, phone, fullName: previous.fullName || 'Customer' }))
+    setIsAuthenticated(true)
+    return { success: true }
+  }
+
+  const onRegister = async ({ fullName, phone, password }) => {
+    validateIndianPhone(phone.replace(/^\+91/, ''))
+
+    if (!fullName || !phone || !password) {
+      throw new Error('Name, phone and password are required.')
+    }
+
+    if (password.length < 6) {
+      throw new Error('Password must be at least 6 characters long.')
+    }
+
+    if (isSupabaseConfigured) {
+      const { error } = await supabase.auth.signUp({
+        email: getAuthEmail(phone),
+        password,
+        options: {
+          data: { full_name: fullName, phone },
+        },
+      })
+      if (error) {
+        throw new Error(error.message)
+      }
+    }
+
+    setCurrentUser((previous) => ({ ...previous, fullName, phone }))
+    setIsAuthenticated(true)
+    return { success: true }
+  }
+
+  const onLogout = () => {
+    setIsAuthenticated(false)
+  }
+
+  const onAdminLogin = async ({ phone, password }) => {
+    if (!isSupabaseConfigured) {
+      throw new Error('Admin login is unavailable until Supabase is configured.')
+    }
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email: getAdminAuthEmail(phone),
+      password,
+    })
+    if (error) {
+      throw new Error('Invalid admin credentials.')
+    }
+
+    try {
+      await issueAdminSession()
+      setIsAdminAuthenticated(true)
+    } catch (sessionError) {
+      await supabase.auth.signOut()
+      throw new Error(sessionError.message === 'ADMIN_ACCESS_REQUIRED' ? 'This account is not authorized for admin access.' : sessionError.message)
+    }
+  }
+
+  const onAdminLogout = async () => {
+    await revokeAdminSession()
+    await supabase.auth.signOut()
+    setIsAdminAuthenticated(false)
+  }
+
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={isAuthenticated ? <Navigate to="/customer/home" replace /> : <LandingPage />} />
+        <Route path="/login" element={<AuthPage mode={mode} setMode={setMode} onLogin={onLogin} onRegister={onRegister} />} />
+        <Route path="/register" element={<AuthPage mode="register" setMode={setMode} onLogin={onLogin} onRegister={onRegister} />} />
+        <Route path="/customer/*" element={isAuthenticated ? <CustomerApp user={currentUser} onLogout={onLogout} /> : <Navigate to="/login" replace />} />
+        <Route path="/admin" element={<Navigate to={isAdminAuthenticated ? '/admin/dashboard' : '/admin/login'} replace />} />
+        <Route path="/admin/login" element={<AdminLogin onLogin={onAdminLogin} />} />
+        <Route path="/admin/dashboard" element={isAdminAuthenticated ? <AdminDashboard onLogout={onAdminLogout} /> : <Navigate to="/admin/login" replace />} />
+        <Route path="*" element={<Navigate to={isAuthenticated ? '/customer/home' : '/login'} replace />} />
+      </Routes>
+    </BrowserRouter>
+  )
+}
+
+export default App
