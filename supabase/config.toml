@@ -1,0 +1,4 @@
+project_id = "booksaloon"
+
+[functions.dispatch-queue-notifications]
+verify_jwt = false

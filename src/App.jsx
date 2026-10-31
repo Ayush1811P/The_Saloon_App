@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Component, useEffect, useMemo, useState } from 'react'
 import {
   ArrowRight,
   Bell,
   CalendarCheck2,
   CheckCircle2,
+  Coffee,
   ChevronRight,
   Clock3,
   Eye,
@@ -11,6 +12,8 @@ import {
   LogOut,
   MapPin,
   Menu,
+  Plus,
+  RefreshCw,
   Scissors,
   Search,
   ShieldCheck,
@@ -36,6 +39,8 @@ import {
 import { customerProfile, offers, salons, serviceCatalog } from './data/mockData'
 import { issueAdminSession, revokeAdminSession, validateAdminSession } from './lib/adminService'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
+import FrontendLandingPage from '../frontend/src/components/LandingPage'
+import LiveQueueTracker from './components/queue/LiveQueueTracker'
 
 const formatCurrency = (value) => `₹${value.toLocaleString('en-IN')}`
 const INDIAN_PHONE_PATTERN = /^[6-9]\d{9}$/
@@ -56,6 +61,19 @@ function validateIndianPhone(phoneDigits) {
   if (!INDIAN_PHONE_PATTERN.test(phoneDigits)) {
     throw new Error('Enter a valid 10-digit Indian mobile number starting with 6, 7, 8 or 9.')
   }
+}
+
+function getIndiaGreeting() {
+  const hour = Number(new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour: 'numeric',
+    hourCycle: 'h23',
+  }).format(new Date()))
+
+  if (hour < 12) return 'Good morning,'
+  if (hour < 17) return 'Good afternoon,'
+  if (hour < 21) return 'Good evening,'
+  return 'Good night,'
 }
 
 const navItems = [
@@ -419,14 +437,14 @@ function AppHeader({ title, subtitle, userName, onLogout }) {
 
 function BottomNavigation() {
   return (
-    <nav className="sticky bottom-0 z-40 border-t border-slate-200 bg-white/90 p-3 backdrop-blur-xl md:hidden">
+    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur-xl md:hidden">
       <div className="mx-auto grid max-w-md grid-cols-4 gap-2">
         {navItems.map(({ label, to }) => (
           <NavLink
             key={to}
             to={to}
             className={({ isActive }) =>
-              `flex flex-col items-center justify-center gap-1 rounded-2xl px-2 py-2 text-[11px] font-medium transition ${
+              `flex min-w-0 flex-col items-center justify-center gap-1 rounded-2xl px-1 py-2 text-[11px] font-medium leading-tight transition ${
                 isActive
                   ? 'bg-gradient-to-r from-violet-600 to-indigo-500 text-white shadow-lg shadow-violet-500/30'
                   : 'text-slate-500 hover:bg-slate-100'
@@ -439,7 +457,7 @@ function BottomNavigation() {
               {label === 'Notifications' && <Bell size={18} />}
               {label === 'Profile' && <UserRound size={18} />}
             </span>
-            <span>{label}</span>
+            <span className="whitespace-nowrap">{label}</span>
           </NavLink>
         ))}
       </div>
@@ -459,6 +477,33 @@ function LoadingScreen() {
       </div>
     </div>
   )
+}
+
+class AppErrorBoundary extends Component {
+  state = { hasError: false }
+
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+
+  componentDidCatch(error) {
+    console.error('BOOKSALOON application error:', error)
+  }
+
+  render() {
+    if (!this.state.hasError) return this.props.children
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 p-5">
+        <div className="w-full max-w-md rounded-3xl bg-white p-6 text-center shadow-xl">
+          <h1 className="text-xl font-black text-slate-900">BOOKSALOON needs a refresh</h1>
+          <p className="mt-2 text-sm text-slate-500">Your session may have expired. Reload the page to continue.</p>
+          <button type="button" onClick={() => window.location.reload()} className="mt-5 rounded-full bg-slate-900 px-5 py-3 text-sm font-semibold text-white">
+            Reload website
+          </button>
+        </div>
+      </div>
+    )
+  }
 }
 
 function StatusBadge({ status }) {
@@ -567,10 +612,11 @@ function BookingCard({ booking }) {
           <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Barber</p>
           <p className="mt-1 font-semibold text-slate-800">{booking.barber}</p>
         </div>
-        <div>
-          <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Chair</p>
-          <p className="mt-1 font-semibold text-slate-800">{booking.chair}</p>
-        </div>
+        {(booking.status === 'Waiting' || booking.status === 'Confirmed') && booking.bookingId && (
+          <Link to={`/customer/queue/${booking.bookingId}`} className="mt-4 inline-flex rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white">
+            Track live queue
+          </Link>
+        )}
         <div>
           <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Date</p>
           <p className="mt-1 font-semibold text-slate-800">{booking.date}</p>
@@ -602,15 +648,16 @@ function NotificationCard({ notification }) {
 }
 
 function ProfileCard({ user }) {
+  const displayName = user.fullName || 'Customer'
   return (
     <div className="rounded-[26px] border border-slate-200 bg-gradient-to-br from-slate-900 via-violet-900 to-indigo-950 p-5 text-white shadow-[0_24px_50px_rgba(79,70,229,0.3)]">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/15 text-lg font-bold">
-            {user.fullName.slice(0, 1)}
+            {displayName.slice(0, 1)}
           </div>
           <div>
-            <p className="text-xl font-bold">{user.fullName}</p>
+            <p className="text-xl font-bold">{displayName}</p>
             <p className="text-sm text-violet-100">{user.tier}</p>
           </div>
         </div>
@@ -661,6 +708,7 @@ function ConfirmationDialog({ title, message, onClose, onConfirm, submitting = f
 }
 
 function HomePage({ userName, userId, userBookings, onBookingCreated }) {
+  const navigate = useNavigate()
   const { data: serviceList = serviceCatalog, isLoading } = useQuery({
     queryKey: ['services-home'],
     queryFn: async () => {
@@ -745,11 +793,11 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
     const result = data?.[0]
     onBookingCreated({
       id: result.booking_id,
+      bookingId: result.booking_id,
       service: selectedServices.map((service) => service.name).join(', '),
       salon: 'BOOKSALOON Demo Salon',
       amount: `₹${totalWithPriority}`,
       barber: result.employee_name,
-      chair: 'To be assigned',
       date: new Date(result.estimated_start_at).toLocaleDateString('en-IN'),
       status: result.booking_status === 'CONFIRMED' ? 'Confirmed' : 'Waiting',
       estimatedWait: result.estimated_wait_minutes,
@@ -764,10 +812,16 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
       <section className="rounded-[30px] bg-[radial-gradient(circle_at_top_left,#f5f3ff_0%,#eef2ff_35%,#ffffff_100%)] p-5 shadow-[0_18px_40px_rgba(79,70,229,0.08)] sm:p-6">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm text-slate-500">Good morning,</p>
+            <p className="text-sm text-slate-500">{getIndiaGreeting()}</p>
             <h1 className="mt-1 text-3xl font-black tracking-[-0.08em] text-slate-900">{userName}</h1>
           </div>
-          <button type="button" className="relative flex h-11 w-11 items-center justify-center rounded-full bg-white text-slate-700 shadow-lg shadow-slate-200/80">
+          <button
+            type="button"
+            onClick={() => navigate('/customer/notifications')}
+            aria-label="Open notifications"
+            title="Notifications"
+            className="relative flex h-11 w-11 items-center justify-center rounded-full bg-white text-slate-700 shadow-lg shadow-slate-200/80 transition hover:bg-violet-50 hover:text-violet-700"
+          >
             <Bell size={18} />
             <span className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-rose-500" />
           </button>
@@ -966,7 +1020,7 @@ function ExplorePage() {
           />
         </div>
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <select value={location} onChange={(event) => setLocation(event.target.value)} className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 outline-none">
             <option>Any area</option>
             <option>Banjara Hills</option>
@@ -1014,17 +1068,25 @@ function NotificationsPage({ userId }) {
     let active = true
     let channel
 
-    const subscribeToNotifications = () => {
+    const loadNotifications = async () => {
       if (!isSupabaseConfigured || !userId) return
+      const { data, error } = await supabase
+        .from('notifications')
+        .select('id, title, message, created_at, is_read')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+      if (error || !active) return
+      setUserNotifications(data || [])
+
       channel = supabase
         .channel(`customer-notifications-${userId}`)
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` }, (payload) => {
-          setUserNotifications((current) => [payload.new, ...current])
+          setUserNotifications((current) => current.some((item) => item.id === payload.new.id) ? current : [payload.new, ...current])
         })
         .subscribe()
     }
 
-    subscribeToNotifications()
+    loadNotifications()
     return () => {
       active = false
       if (channel) supabase.removeChannel(channel)
@@ -1053,6 +1115,7 @@ function ProfilePage({ user }) {
   return (
     <div className="space-y-5 pb-24">
       <ProfileCard user={user} />
+      <NotificationPreferencesCard userId={user.id} />
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-[0_16px_32px_rgba(15,23,42,0.04)]">
@@ -1075,6 +1138,50 @@ function ProfilePage({ user }) {
       </div>
     </div>
   )
+}
+
+function NotificationPreferencesCard({ userId }) {
+  const [preferences, setPreferences] = useState({ browser_enabled: true, android_enabled: true, queue_enabled: true, turn_alerts_enabled: true })
+  const [devices, setDevices] = useState([])
+  const [message, setMessage] = useState('')
+  useEffect(() => {
+    if (!isSupabaseConfigured || !userId) return undefined
+    let active = true
+    Promise.all([
+      supabase.from('notification_preferences').select('browser_enabled, android_enabled, queue_enabled, turn_alerts_enabled').eq('user_id', userId).maybeSingle(),
+      supabase.from('device_push_subscriptions').select('id, platform, permission_status, last_seen_at, revoked_at').eq('user_id', userId).order('last_seen_at', { ascending: false }),
+    ]).then(([preferenceResult, deviceResult]) => {
+      if (!active) return
+      if (preferenceResult.data) setPreferences((current) => ({ ...current, ...preferenceResult.data }))
+      if (!deviceResult.error) setDevices(deviceResult.data || [])
+    })
+    return () => { active = false }
+  }, [userId])
+  const updatePreference = async (key, value) => {
+    const next = { ...preferences, [key]: value, user_id: userId, updated_at: new Date().toISOString() }
+    setPreferences(next)
+    const { error } = await supabase.from('notification_preferences').upsert(next)
+    setMessage(error ? error.message : 'Notification preferences saved.')
+  }
+  const revokeDevice = async (deviceId) => {
+    const { error } = await supabase.from('device_push_subscriptions').update({ revoked_at: new Date().toISOString() }).eq('id', deviceId).eq('user_id', userId)
+    if (error) setMessage(error.message)
+    else {
+      setDevices((current) => current.map((device) => device.id === deviceId ? { ...device, revoked_at: new Date().toISOString() } : device))
+      setMessage('Device revoked.')
+    }
+  }
+  return <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+    <div className="flex items-center justify-between"><div><p className="text-lg font-bold text-slate-900">Notification settings</p><p className="text-sm text-slate-500">Control queue alerts and registered devices.</p></div><Bell size={18} className="text-violet-600" /></div>
+    <div className="mt-4 grid gap-3 sm:grid-cols-2">{[['browser_enabled', 'Browser notifications'], ['android_enabled', 'Android notifications'], ['queue_enabled', 'Queue updates'], ['turn_alerts_enabled', 'Turn approaching alerts']].map(([key, label]) => <label key={key} className="flex items-center justify-between rounded-2xl bg-slate-50 p-3 text-sm font-semibold"><span>{label}</span><input type="checkbox" checked={Boolean(preferences[key])} onChange={(event) => updatePreference(key, event.target.checked)} className="h-4 w-4 accent-violet-600" /></label>)}</div>
+    <div className="mt-5 space-y-2">{devices.map((device) => <div key={device.id} className="flex items-center justify-between rounded-2xl border border-slate-100 p-3 text-sm"><span>{device.platform} • {device.permission_status} {device.revoked_at ? '• Revoked' : ''}</span>{!device.revoked_at && <button type="button" onClick={() => revokeDevice(device.id)} className="text-xs font-semibold text-rose-600">Revoke</button>}</div>)}</div>
+    {message && <p className="mt-3 text-xs text-slate-500">{message}</p>}
+  </section>
+}
+
+function LiveQueueRoute({ userId }) {
+  const { bookingId } = useParams()
+  return <LiveQueueTracker bookingId={bookingId} userId={userId} />
 }
 
 function SalonDetailPage() {
@@ -1105,10 +1212,6 @@ function SalonDetailPage() {
             <div className="rounded-2xl bg-slate-50 p-3">
               <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Hours</p>
               <p className="mt-2 text-sm font-semibold text-slate-900">{salon.workingHours}</p>
-            </div>
-            <div className="rounded-2xl bg-slate-50 p-3">
-              <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Chairs</p>
-              <p className="mt-2 text-sm font-semibold text-slate-900">{salon.availableChairs} available</p>
             </div>
             <div className="rounded-2xl bg-slate-50 p-3">
               <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Queue</p>
@@ -1562,6 +1665,143 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
   </section>
 }
 
+function SalonFloor({ salonId }) {
+  const queryClient = useQueryClient()
+  const [walkInOpen, setWalkInOpen] = useState(false)
+  const [assignmentChoice, setAssignmentChoice] = useState({})
+  const [actionError, setActionError] = useState('')
+  const [actionMessage, setActionMessage] = useState('')
+  const [busyAction, setBusyAction] = useState('')
+  const floorQuery = useQuery({
+    queryKey: ['salon-floor', salonId],
+    enabled: Boolean(salonId && isSupabaseConfigured),
+    refetchInterval: 10000,
+    queryFn: async () => {
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+      const [employees, statuses, services, assignments, queues] = await Promise.all([
+        supabase.from('employees').select('id, employee_name, status').eq('salon_id', salonId).order('employee_name'),
+        supabase.from('employee_floor_status').select('employee_id, status').eq('salon_id', salonId),
+        supabase.from('services').select('id, name, duration_minutes, is_active').eq('salon_id', salonId).eq('is_active', true).order('name'),
+        supabase.from('booking_staff').select('employee_id, booking_id, start_at, end_at, booking:bookings(id, status, customer_name_snapshot, customer_phone_snapshot, customer:profiles(full_name, phone), booking_items(service_name_snapshot))').eq('salon_id', salonId).eq('status', 'ACTIVE').gt('end_at', new Date().toISOString()),
+        supabase.from('queue_entries').select('id, booking_id, queue_number, status, estimated_wait_minutes, estimated_start_at, customer_name_snapshot, customer_phone_snapshot, customer:profiles(full_name, phone), booking:bookings(booking_type, status, scheduled_start, booking_items(service_name_snapshot), booking_staff(employee:employees(employee_name)) )').eq('salon_id', salonId).eq('queue_date', today).in('status', ['WAITING', 'CALLED', 'SERVING']).order('queue_number'),
+      ])
+      const failed = [employees, statuses, services, assignments, queues].find((result) => result.error)
+      if (failed) throw new Error(failed.error.message)
+      const statusMap = Object.fromEntries((statuses.data || []).map((status) => [status.employee_id, status.status]))
+      const assignmentMap = Object.fromEntries((assignments.data || []).map((assignment) => [assignment.employee_id, assignment]))
+      return {
+        employees: (employees.data || []).map((employee) => ({ ...employee, floorStatus: statusMap[employee.id] || 'AVAILABLE', assignment: assignmentMap[employee.id] })),
+        services: services.data || [],
+        queue: queues.data || [],
+      }
+    },
+  })
+
+  useEffect(() => {
+    if (!salonId) return undefined
+    const channel = supabase.channel(`salon-floor-${salonId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings', filter: `salon_id=eq.${salonId}` }, () => queryClient.invalidateQueries({ queryKey: ['salon-floor', salonId] }))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'booking_staff', filter: `salon_id=eq.${salonId}` }, () => queryClient.invalidateQueries({ queryKey: ['salon-floor', salonId] }))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'queue_entries', filter: `salon_id=eq.${salonId}` }, () => queryClient.invalidateQueries({ queryKey: ['salon-floor', salonId] }))
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [queryClient, salonId])
+
+  const data = floorQuery.data || { employees: [], services: [], queue: [] }
+  const busyBarbers = data.employees.filter((employee) => employee.assignment)
+  const availableBarbers = data.employees.filter((employee) => !employee.assignment && employee.floorStatus === 'AVAILABLE')
+  const breakBarbers = data.employees.filter((employee) => !employee.assignment && employee.floorStatus === 'BREAK')
+  const offlineBarbers = data.employees.filter((employee) => !employee.assignment && employee.floorStatus === 'OFFLINE')
+  const waiting = data.queue.filter((entry) => entry.status === 'WAITING' || entry.status === 'CALLED')
+  const estimatedWait = waiting.reduce((max, entry) => Math.max(max, entry.estimated_wait_minutes || 0), 0)
+  const runAction = async (label, rpc, args) => {
+    setBusyAction(label)
+    setActionError('')
+    setActionMessage('')
+    const { error } = await supabase.rpc(rpc, { p_salon_id: salonId, ...args })
+    setBusyAction('')
+    if (error) setActionError(error.message)
+    else {
+      setActionMessage(label)
+      floorQuery.refetch()
+    }
+  }
+  const customerName = (entry) => entry.customer_name_snapshot || entry.customer?.full_name || 'Walk-in customer'
+  const serviceName = (entry) => entry.booking?.booking_items?.map((item) => item.service_name_snapshot).join(', ') || 'Service'
+
+  return (
+    <section className="space-y-5">
+      <div className="flex flex-col gap-3 rounded-[28px] bg-[#0b1220] p-5 text-white shadow-xl sm:flex-row sm:items-center sm:justify-between">
+        <div><p className="text-xs font-bold uppercase tracking-[0.2em] text-[#d9b78c]">Live operations</p><h2 className="mt-1 text-2xl font-black">Salon Floor</h2><p className="mt-1 text-sm text-slate-300">All times and ETAs are live estimates from Supabase.</p></div>
+        <button type="button" onClick={() => setWalkInOpen(true)} className="inline-flex items-center justify-center gap-2 rounded-full bg-[#d9b78c] px-5 py-3 text-sm font-black text-[#0b1220]"><Plus size={18} /> ADD WALK-IN CUSTOMER</button>
+      </div>
+      {actionError && <p className="rounded-2xl bg-rose-50 p-3 text-sm text-rose-700">{actionError}</p>}
+      {actionMessage && <p className="rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-700">{actionMessage}</p>}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        {[
+          ['Available', availableBarbers.length, 'text-emerald-600'],
+          ['Busy', busyBarbers.length, 'text-violet-600'],
+          ['On break', breakBarbers.length, 'text-amber-600'],
+          ['Offline', offlineBarbers.length, 'text-slate-500'],
+          ['Waiting', waiting.length, 'text-rose-600'],
+        ].map(([label, value, color]) => <div key={label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-bold uppercase tracking-wider text-slate-500">{label}</p><p className={`mt-2 text-3xl font-black ${color}`}>{value}</p>{label === 'Waiting' && <p className="text-xs text-slate-500">Max estimate: {estimatedWait} min</p>}</div>)}
+      </div>
+      {floorQuery.isLoading && <p className="rounded-2xl bg-white p-5 text-sm text-slate-500">Loading salon floor...</p>}
+      {floorQuery.isError && <p className="rounded-2xl bg-rose-50 p-5 text-sm text-rose-700">{floorQuery.error.message}</p>}
+      <div className="grid gap-4 lg:grid-cols-2">
+        {data.employees.map((employee) => {
+          const assignment = employee.assignment
+          const booking = assignment?.booking
+          const status = assignment ? 'BUSY' : employee.floorStatus
+          return <div key={employee.id} className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div><p className="font-bold text-slate-900">{employee.employee_name}</p><p className="mt-1 text-xs text-slate-500">Barber management</p></div>
+              <span className={`rounded-full px-3 py-1 text-xs font-bold ${status === 'BUSY' ? 'bg-violet-100 text-violet-700' : status === 'AVAILABLE' ? 'bg-emerald-100 text-emerald-700' : status === 'BREAK' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>{status}</span>
+            </div>
+            {assignment ? <div className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm"><p className="font-semibold">{booking?.customer_name_snapshot || booking?.customer?.full_name || 'Customer'}</p><p className="text-slate-500">{booking?.booking_items?.map((item) => item.service_name_snapshot).join(', ') || 'Service'} • started {new Date(assignment.start_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</p><p className="mt-1 text-xs text-slate-500">Estimated remaining: {Math.max(0, Math.ceil((new Date(assignment.end_at).getTime() - Date.now()) / 60000))} min</p></div> : <p className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm text-slate-500">No active customer</p>}
+            <div className="mt-4 flex flex-wrap gap-2">
+              {assignment ? <button type="button" disabled={busyAction === 'Complete service'} onClick={() => runAction('Complete service', 'complete_service', { p_booking_id: assignment.booking_id })} className="rounded-full bg-emerald-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">Complete Service</button> : <>
+                <button type="button" onClick={() => runAction('Available', 'update_staff_availability', { p_employee_id: employee.id, p_status: 'AVAILABLE' })} className="rounded-full border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-700">Mark Available</button>
+                <button type="button" onClick={() => runAction('Break', 'update_staff_availability', { p_employee_id: employee.id, p_status: 'BREAK' })} className="rounded-full border border-amber-200 px-3 py-2 text-xs font-semibold text-amber-700"><Coffee size={13} className="mr-1 inline" />Start Break</button>
+                <button type="button" onClick={() => runAction('Offline', 'update_staff_availability', { p_employee_id: employee.id, p_status: 'OFFLINE' })} className="rounded-full border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600">Mark Offline</button>
+              </>}
+            </div>
+          </div>
+        })}
+      </div>
+      <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-4 flex items-center justify-between"><div><h3 className="text-xl font-black">Unified waiting queue</h3><p className="text-sm text-slate-500">Online appointments and walk-ins, ordered by queue number.</p></div><button type="button" onClick={() => floorQuery.refetch()} className="rounded-full border p-2 text-slate-500" aria-label="Refresh floor"><RefreshCw size={16} /></button></div>
+        <div className="space-y-2">{waiting.map((entry) => <div key={entry.id} className="flex flex-col gap-3 rounded-2xl bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex items-center gap-2"><span className="rounded-full bg-slate-900 px-2 py-1 text-[10px] font-bold text-white">{entry.booking?.booking_type === 'WALK_IN' ? 'WALK_IN' : 'ONLINE'}</span><p className="font-semibold">{customerName(entry)}</p></div><p className="mt-1 text-sm text-slate-500">{serviceName(entry)} • {entry.booking?.booking_staff?.[0]?.employee?.employee_name || 'Unassigned'}</p></div><div className="text-left sm:text-right"><p className="font-bold">Queue {entry.queue_number}</p><p className="text-xs text-slate-500">Estimated wait: {entry.estimated_wait_minutes ?? 'calculating'} min</p><div className="mt-2 flex flex-wrap justify-end gap-2">{!entry.booking?.booking_staff?.length && <><select value={assignmentChoice[entry.booking_id] || ''} onChange={(event) => setAssignmentChoice((current) => ({ ...current, [entry.booking_id]: event.target.value }))} className="rounded-full border bg-white px-2 py-1 text-xs"><option value="">Assign barber</option>{availableBarbers.map((employee) => <option key={employee.id} value={employee.id}>{employee.employee_name}</option>)}</select><button type="button" disabled={!assignmentChoice[entry.booking_id]} onClick={() => runAction('Assign customer', 'assign_waiting_customer', { p_booking_id: entry.booking_id, p_employee_id: assignmentChoice[entry.booking_id] })} className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white disabled:opacity-40">Assign</button></>}<button type="button" onClick={() => runAction('Cancel booking', 'cancel_walkin_booking', { p_booking_id: entry.booking_id })} className="rounded-full px-2 py-1 text-xs font-semibold text-rose-600">Cancel</button></div></div></div>)}</div>
+        {waiting.length === 0 && !floorQuery.isLoading && <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">No customers are waiting.</p>}
+      </div>
+      {walkInOpen && <WalkInModal salonId={salonId} services={data.services} employees={data.employees} onClose={() => setWalkInOpen(false)} onCreated={() => { setWalkInOpen(false); floorQuery.refetch(); setActionMessage('Walk-in customer added') }} />}
+    </section>
+  )
+}
+
+function WalkInModal({ salonId, services, employees, onClose, onCreated }) {
+  const [form, setForm] = useState({ name: '', phone: '', serviceId: services[0]?.id || '', mode: 'AUTO', employeeId: '' })
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const submit = async (event) => {
+    event.preventDefault()
+    setSaving(true)
+    setError('')
+    const { error: rpcError } = await supabase.rpc('create_walkin_booking', {
+      p_salon_id: salonId,
+      p_customer_name: form.name,
+      p_customer_phone: form.phone || null,
+      p_service_id: form.serviceId,
+      p_preferred_employee_id: form.mode === 'MANUAL' ? form.employeeId : null,
+      p_assignment_mode: form.mode,
+    })
+    setSaving(false)
+    if (rpcError) setError(rpcError.message)
+    else onCreated()
+  }
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"><form onSubmit={submit} className="w-full max-w-lg rounded-[28px] bg-white p-6 shadow-2xl"><div className="flex items-center justify-between"><h2 className="text-2xl font-black">Add walk-in customer</h2><button type="button" onClick={onClose} className="text-slate-400">Close</button></div><div className="mt-5 grid gap-4"><input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Customer name *" className="rounded-2xl border px-4 py-3" /><input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} placeholder="Mobile number (optional)" className="rounded-2xl border px-4 py-3" /><select required value={form.serviceId} onChange={(event) => setForm({ ...form, serviceId: event.target.value })} className="rounded-2xl border px-4 py-3">{services.map((service) => <option key={service.id} value={service.id}>{service.name} • {service.duration_minutes} min</option>)}</select><select value={form.mode} onChange={(event) => setForm({ ...form, mode: event.target.value })} className="rounded-2xl border px-4 py-3"><option value="AUTO">Auto-assign next available barber</option><option value="QUEUE">Add to waiting queue</option><option value="MANUAL">Manually select a barber</option></select>{form.mode === 'MANUAL' && <select required value={form.employeeId} onChange={(event) => setForm({ ...form, employeeId: event.target.value })} className="rounded-2xl border px-4 py-3"><option value="">Select barber</option>{employees.filter((employee) => !employee.assignment && employee.floorStatus === 'AVAILABLE').map((employee) => <option key={employee.id} value={employee.id}>{employee.employee_name}</option>)}</select>}</div>{error && <p className="mt-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}<button disabled={saving} className="mt-5 w-full rounded-full bg-slate-900 px-5 py-3 font-bold text-white disabled:opacity-50">{saving ? 'Adding...' : 'Add customer'}</button></form></div>
+}
+
 function AdminDashboard({ onLogout }) {
   const [checkingSession, setCheckingSession] = useState(true)
   const [activeSection, setActiveSection] = useState('Dashboard')
@@ -1632,7 +1872,7 @@ function AdminDashboard({ onLogout }) {
         <p className="text-lg font-black tracking-[-0.06em]">BOOKSALOON</p>
         <p className="mt-1 text-[10px] uppercase tracking-[0.18em] text-slate-400">Admin workspace</p>
         <nav className="mt-8 grid gap-2 text-sm">
-          {['Dashboard', 'Services & Pricing', 'Staff Management', 'Business Hours', 'Waiting Time Settings', 'Appointments', 'Notifications', 'Settings'].map((item) => (
+          {['Dashboard', 'Salon Floor', 'Services & Pricing', 'Staff Management', 'Business Hours', 'Waiting Time Settings', 'Appointments', 'Notifications', 'Settings'].map((item) => (
             <button key={item} type="button" onClick={() => setActiveSection(item)} className={`rounded-xl px-3 py-2.5 text-left ${activeSection === item ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white'}`}>
               {item}
             </button>
@@ -1653,7 +1893,9 @@ function AdminDashboard({ onLogout }) {
           <PrimaryButton onClick={() => navigate('/customer/home')}>Go to customer app</PrimaryButton>
         </header>
 
-        {activeSection === 'Dashboard' ? (
+        {activeSection === 'Salon Floor' ? (
+          <SalonFloor salonId={selectedSalonId} />
+        ) : activeSection === 'Dashboard' ? (
           <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_40px_rgba(15,23,42,0.04)]">
             <div className="mb-4 flex items-center justify-between">
               <div>
@@ -1876,15 +2118,44 @@ function CustomerApp({ user, onLogout }) {
     let active = true
     const loadProfile = async () => {
       if (!isSupabaseConfigured) return
-      const { data: authData } = await supabase.auth.getUser()
-      if (!authData.user) return
-      const { data } = await supabase
+      const { data: authData, error: authError } = await supabase.auth.getUser()
+      if (authError || !authData.user) {
+        if (authError) console.error('Unable to restore customer session:', authError)
+        return
+      }
+      const { data: profileData, error: profileError } = await supabase
         .from('profiles')
-        .select('full_name, phone')
+        .select('full_name, phone, created_at')
         .eq('id', authData.user.id)
         .maybeSingle()
-      if (active && data) {
-        setProfile((current) => ({ ...current, fullName: data.full_name || current.fullName, phone: data.phone || current.phone }))
+      const { data: bookingData, error: bookingError } = await supabase
+        .from('bookings')
+        .select('id, booking_number, status, scheduled_start, total_paise, salon:salons(name), booking_items(service_name_snapshot), booking_staff(employee:employees(employee_name))')
+        .eq('customer_id', authData.user.id)
+        .order('created_at', { ascending: false })
+      if (profileError) console.error('Unable to load customer profile:', profileError)
+      if (bookingError) console.error('Unable to load customer bookings:', bookingError)
+      if (active && profileData) {
+        setProfile((current) => ({
+          ...current,
+          fullName: profileData.full_name || current.fullName,
+          phone: profileData.phone || current.phone,
+          memberSince: profileData.created_at
+            ? new Date(profileData.created_at).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })
+            : current.memberSince,
+        }))
+      }
+      if (active && bookingData) {
+        setUserBookings(bookingData.map((booking) => ({
+          id: booking.booking_number || booking.id,
+          bookingId: booking.id,
+          service: booking.booking_items?.map((item) => item.service_name_snapshot).join(', ') || 'Salon appointment',
+          salon: booking.salon?.name || 'BOOKSALOON',
+          amount: `₹${((booking.total_paise || 0) / 100).toLocaleString('en-IN')}`,
+          barber: booking.booking_staff?.[0]?.employee?.employee_name || 'To be assigned',
+          date: new Date(booking.scheduled_start).toLocaleDateString('en-IN'),
+          status: booking.status === 'CONFIRMED' ? 'Confirmed' : booking.status === 'WAITING' ? 'Waiting' : booking.status,
+        })))
       }
     }
     loadProfile()
@@ -1896,11 +2167,12 @@ function CustomerApp({ user, onLogout }) {
   return (
     <div className="min-h-screen bg-[#f5f7fb] text-slate-900">
       <AppHeader title="BOOKSALOON" subtitle="Premium salon booking" userName={profile.fullName} onLogout={onLogout} />
-      <main className="mx-auto max-w-6xl px-4 py-5 sm:px-6 lg:px-8">
+      <main className="mx-auto max-w-6xl px-4 py-5 pb-28 sm:px-6 lg:px-8 md:pb-5">
         <Routes>
           <Route index element={<Navigate to="home" replace />} />
-          <Route path="home" element={<HomePage userName={profile.fullName} userId={profile.id} userBookings={userBookings} onBookingCreated={(booking) => setUserBookings([booking])} />} />
+          <Route path="home" element={<HomePage userName={profile.fullName || 'Customer'} userId={profile.id} userBookings={userBookings} onBookingCreated={(booking) => setUserBookings((current) => [booking, ...current])} />} />
           <Route path="bookings" element={<BookingsPage userBookings={userBookings} />} />
+          <Route path="queue/:bookingId" element={<LiveQueueRoute userId={profile.id} />} />
           <Route path="notifications" element={<NotificationsPage userId={profile.id} />} />
           <Route path="profile" element={<ProfilePage user={profile} />} />
           <Route path="salon/:salonId" element={<SalonDetailPage />} />
@@ -1925,22 +2197,28 @@ function App() {
 
     let active = true
     const restoreCustomerSession = async () => {
-      const { data, error } = await supabase.auth.getSession()
-      if (error) {
+      try {
+        const { data, error } = await supabase.auth.getSession()
+        if (error) {
+          await supabase.auth.signOut()
+          return
+        }
+        const user = data.session?.user
+        if (active && user?.email?.startsWith('phone-')) {
+          setCurrentUser((previous) => ({
+            ...previous,
+            id: user.id,
+            phone: user.user_metadata?.phone || previous.phone,
+            fullName: user.user_metadata?.full_name || previous.fullName || 'Customer',
+          }))
+          setIsAuthenticated(true)
+        }
+      } catch (restoreError) {
+        console.error('Unable to restore saved session:', restoreError)
+        await supabase.auth.signOut()
+      } finally {
         setAuthLoading(false)
-        return
       }
-      const user = data.session?.user
-      if (active && user?.email?.startsWith('phone-')) {
-        setCurrentUser((previous) => ({
-          ...previous,
-          id: user.id,
-          phone: user.user_metadata?.phone || previous.phone,
-          fullName: user.user_metadata?.full_name || previous.fullName,
-        }))
-        setIsAuthenticated(true)
-      }
-      if (active) setAuthLoading(false)
     }
 
     restoreCustomerSession()
@@ -2048,10 +2326,11 @@ function App() {
   }
 
   return (
-    <BrowserRouter>
+    <AppErrorBoundary>
+      <BrowserRouter>
       {authLoading ? <LoadingScreen /> : (
       <Routes>
-        <Route path="/" element={isAuthenticated ? <Navigate to="/customer/home" replace /> : <LandingPage />} />
+        <Route path="/" element={isAuthenticated ? <Navigate to="/customer/home" replace /> : <FrontendLandingPage />} />
         <Route path="/login" element={<AuthPage initialMode="login" onLogin={onLogin} onRegister={onRegister} />} />
         <Route path="/register" element={<AuthPage initialMode="register" onLogin={onLogin} onRegister={onRegister} />} />
         <Route path="/customer/*" element={isAuthenticated ? <CustomerApp user={currentUser} onLogout={onLogout} /> : <Navigate to="/login" replace />} />
@@ -2061,7 +2340,8 @@ function App() {
         <Route path="*" element={<Navigate to={isAuthenticated ? '/customer/home' : '/login'} replace />} />
       </Routes>
       )}
-    </BrowserRouter>
+      </BrowserRouter>
+    </AppErrorBoundary>
   )
 }
 

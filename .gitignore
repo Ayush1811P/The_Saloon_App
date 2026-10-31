@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 .env.local
+.env
+.env.*
+!.env.example
+supabase/.env
+supabase/.env.*
+!supabase/.env.example
 
 # Editor directories and files
 .vscode/*
@@ -23,3 +29,13 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Android/Firebase local credentials
+android/app/google-services.json
+android/.gradle/
+android/**/google-services.json
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore

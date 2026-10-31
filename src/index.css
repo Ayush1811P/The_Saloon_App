@@ -1,5 +1,32 @@
 @import 'tailwindcss';
 
+@theme {
+  --font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+  --color-ink: #0b1220;
+  --color-navy: #172033;
+  --color-gold: #d9b78c;
+  --color-gold-deep: #a06f3e;
+  --color-cream: #f7f4ef;
+  --color-sand: #efe7dc;
+}
+
+@keyframes marquee {
+  to { transform: translateX(-50%); }
+}
+
+.marquee-track {
+  animation: marquee 40s linear infinite;
+}
+
+.marquee-track:hover {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .marquee-track { animation: none; }
+}
+
 :root {
   font-family: 'Inter', 'Segoe UI', sans-serif;
   line-height: 1.5;

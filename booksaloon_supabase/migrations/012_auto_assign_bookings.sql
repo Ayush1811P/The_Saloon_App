@@ -62,8 +62,7 @@ begin
     and e.status = 'ACTIVE'
   group by e.id, e.employee_name
   order by greatest(now(), coalesce(max(bs.end_at), now())), e.created_at
-  limit 1
-  for update of e;
+  limit 1;
 
   if v_employee_id is null then raise exception 'No active staff available'; end if;
 
@@ -78,7 +77,7 @@ begin
   values (
     p_salon_id, v_customer_id,
     'BK-' || to_char(now(), 'YYYYMMDDHH24MISS') || '-' || substr(gen_random_uuid()::text, 1, 6),
-    case when p_priority then 'QUICK_TURN' else 'NORMAL' end,
+    case when p_priority then 'QUICK_TURN'::public.booking_type else 'NORMAL'::public.booking_type end,
     v_booking_status, v_start, v_end, v_total, v_total, 'PAY_AT_SALON'
   )
   returning id into v_booking_id;
@@ -122,7 +121,7 @@ begin
       then 'Your appointment is approved. ' || v_employee_name || ' is available now.'
       else 'Estimated waiting time is ' || v_wait || ' minutes. Assigned staff: ' || v_employee_name || '.'
     end,
-    case when v_wait = 0 then 'BOOKING_CONFIRMED' else 'QUEUE_UPDATE' end
+    case when v_wait = 0 then 'BOOKING_CONFIRMED'::public.notification_type else 'QUEUE_UPDATE'::public.notification_type end
   );
 
   return query select v_booking_id, v_booking_status, v_wait, v_start, v_employee_name;

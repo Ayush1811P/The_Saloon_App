@@ -2260,6 +2260,7 @@ grant execute on function public.cancel_booking(uuid) to authenticated;
 --    'Beard shaping and trim', 10000, 15);
 --
 -- Intentionally no fake production users, bookings, or payments are inserted.
+
 -- BOOKSALOON | 012: Transactional booking approval and staff ETA
 
 create or replace function public.create_auto_assigned_booking(
@@ -2324,8 +2325,7 @@ begin
     and e.status = 'ACTIVE'
   group by e.id, e.employee_name
   order by greatest(now(), coalesce(max(bs.end_at), now())), e.created_at
-  limit 1
-  for update of e;
+  limit 1;
 
   if v_employee_id is null then raise exception 'No active staff available'; end if;
 
@@ -2340,134 +2340,7 @@ begin
   values (
     p_salon_id, v_customer_id,
     'BK-' || to_char(now(), 'YYYYMMDDHH24MISS') || '-' || substr(gen_random_uuid()::text, 1, 6),
-    case when p_priority then 'QUICK_TURN' else 'NORMAL' end,
-    v_booking_status, v_start, v_end, v_total, v_total, 'PAY_AT_SALON'
-  )
-  returning id into v_booking_id;
-
-  insert into public.booking_items (
-    salon_id, booking_id, service_id, service_name_snapshot,
-    unit_price_paise, duration_minutes
-  )
-  select p_salon_id, v_booking_id, s.id, s.name, s.price_paise, s.duration_minutes
-  from public.services s
-  where s.salon_id = p_salon_id and s.id = any(p_service_ids) and s.is_active;
-
-  insert into public.booking_staff (salon_id, booking_id, employee_id, start_at, end_at)
-  values (p_salon_id, v_booking_id, v_employee_id, v_start, v_end);
-
-  select public.next_queue_number(p_salon_id, (now() at time zone 'Asia/Kolkata')::date)
-    into v_queue_number;
-  insert into public.queue_entries (
-    salon_id, booking_id, customer_id, queue_date, queue_number,
-    estimated_wait_minutes, estimated_start_at
-  )
-  values (
-    p_salon_id, v_booking_id, v_customer_id,
-    (now() at time zone 'Asia/Kolkata')::date, v_queue_number,
-    v_wait, v_start
-  );
-
-  insert into public.notifications (
-    user_id, salon_id, booking_id, title, message, notification_type
-  )
-  values (
-    v_customer_id, p_salon_id, v_booking_id,
-    case when v_wait = 0 then 'Appointment approved' else 'Appointment queued' end,
-    case when v_wait = 0
-      then 'Your appointment is approved. ' || v_employee_name || ' is available now.'
-      else 'Estimated waiting time is ' || v_wait || ' minutes. Assigned staff: ' || v_employee_name || '.'
-    end,
-    case when v_wait = 0 then 'BOOKING_CONFIRMED' else 'QUEUE_UPDATE' end
-  );
-
-  return query select v_booking_id, v_booking_status, v_wait, v_start, v_employee_name;
-end;
-$$;
-
-revoke all on function public.create_auto_assigned_booking(uuid, uuid[], boolean) from public;
-grant execute on function public.create_auto_assigned_booking(uuid, uuid[], boolean) to authenticated;
--- BOOKSALOON | 012: Transactional booking approval and staff ETA
-
-create or replace function public.create_auto_assigned_booking(
-  p_salon_id uuid,
-  p_service_ids uuid[],
-  p_priority boolean default false
-)
-returns table (
-  booking_id uuid,
-  booking_status public.booking_status,
-  estimated_wait_minutes integer,
-  estimated_start_at timestamptz,
-  employee_name text
-)
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_customer_id uuid := auth.uid();
-  v_salon_status public.salon_status;
-  v_duration integer;
-  v_total integer;
-  v_start timestamptz;
-  v_end timestamptz;
-  v_employee_id uuid;
-  v_employee_name text;
-  v_booking_id uuid;
-  v_booking_status public.booking_status;
-  v_queue_number integer;
-  v_wait integer;
-begin
-  if v_customer_id is null then raise exception 'Authentication required'; end if;
-  if p_salon_id is null or coalesce(array_length(p_service_ids, 1), 0) = 0 then
-    raise exception 'Select at least one service';
-  end if;
-
-  select status into v_salon_status
-  from public.salons
-  where id = p_salon_id
-  for update;
-  if not found then raise exception 'Salon not found'; end if;
-  if v_salon_status <> 'ACTIVE' then raise exception 'SALON_CLOSED'; end if;
-
-  select coalesce(sum(s.duration_minutes), 0), coalesce(sum(s.price_paise), 0)
-    into v_duration, v_total
-  from public.services s
-  where s.salon_id = p_salon_id
-    and s.id = any(p_service_ids)
-    and s.is_active;
-  if v_duration = 0 then raise exception 'Selected service is unavailable'; end if;
-
-  select e.id, e.employee_name,
-         greatest(now(), coalesce(max(bs.end_at), now()))
-    into v_employee_id, v_employee_name, v_start
-  from public.employees e
-  left join public.booking_staff bs
-    on bs.employee_id = e.id
-   and bs.status = 'ACTIVE'
-   and bs.end_at > now()
-  where e.salon_id = p_salon_id
-    and e.status = 'ACTIVE'
-  group by e.id, e.employee_name
-  order by greatest(now(), coalesce(max(bs.end_at), now())), e.created_at
-  limit 1
-  for update of e;
-
-  if v_employee_id is null then raise exception 'No active staff available'; end if;
-
-  v_end := v_start + make_interval(mins => v_duration + case when p_priority then 0 else 0 end);
-  v_wait := greatest(0, ceil(extract(epoch from (v_start - now())) / 60.0)::integer);
-  v_booking_status := case when v_wait = 0 then 'CONFIRMED' else 'WAITING' end;
-
-  insert into public.bookings (
-    salon_id, customer_id, booking_number, booking_type, status,
-    scheduled_start, scheduled_end, subtotal_paise, total_paise, payment_status
-  )
-  values (
-    p_salon_id, v_customer_id,
-    'BK-' || to_char(now(), 'YYYYMMDDHH24MISS') || '-' || substr(gen_random_uuid()::text, 1, 6),
-    case when p_priority then 'QUICK_TURN' else 'NORMAL' end,
+    case when p_priority then 'QUICK_TURN'::public.booking_type else 'NORMAL'::public.booking_type end,
     v_booking_status, v_start, v_end, v_total, v_total, 'PAY_AT_SALON'
   )
   returning id into v_booking_id;
@@ -2511,7 +2384,7 @@ begin
       then 'Your appointment is approved. ' || v_employee_name || ' is available now.'
       else 'Estimated waiting time is ' || v_wait || ' minutes. Assigned staff: ' || v_employee_name || '.'
     end,
-    case when v_wait = 0 then 'BOOKING_CONFIRMED' else 'QUEUE_UPDATE' end
+    case when v_wait = 0 then 'BOOKING_CONFIRMED'::public.notification_type else 'QUEUE_UPDATE'::public.notification_type end
   );
 
   return query select v_booking_id, v_booking_status, v_wait, v_start, v_employee_name;
@@ -2520,3 +2393,690 @@ $$;
 
 revoke all on function public.create_auto_assigned_booking(uuid, uuid[], boolean) from public;
 grant execute on function public.create_auto_assigned_booking(uuid, uuid[], boolean) to authenticated;
+
+-- BOOKSALOON | 013: Live salon floor and walk-in operations
+
+alter table public.bookings alter column customer_id drop not null;
+alter table public.bookings add column if not exists customer_name_snapshot text;
+alter table public.bookings add column if not exists customer_phone_snapshot text;
+alter table public.queue_entries alter column customer_id drop not null;
+alter table public.queue_entries add column if not exists customer_name_snapshot text;
+alter table public.queue_entries add column if not exists customer_phone_snapshot text;
+
+create table if not exists public.employee_floor_status (
+  salon_id uuid not null references public.salons(id) on delete cascade,
+  employee_id uuid primary key references public.employees(id) on delete cascade,
+  status text not null default 'AVAILABLE'
+    check (status in ('AVAILABLE', 'BREAK', 'OFFLINE')),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists employee_floor_status_salon_idx
+  on public.employee_floor_status(salon_id, status);
+
+alter table public.employee_floor_status enable row level security;
+drop policy if exists employee_floor_status_member_select on public.employee_floor_status;
+create policy employee_floor_status_member_select on public.employee_floor_status
+for select to authenticated using (public.is_salon_member(salon_id) or public.is_platform_admin());
+drop policy if exists employee_floor_status_manage on public.employee_floor_status;
+create policy employee_floor_status_manage on public.employee_floor_status
+for all to authenticated
+using (public.has_salon_role(salon_id, array['OWNER','ADMIN']::public.member_role[]) or public.is_platform_admin())
+with check (public.has_salon_role(salon_id, array['OWNER','ADMIN']::public.member_role[]) or public.is_platform_admin());
+
+create or replace function public.assert_floor_admin(p_salon_id uuid)
+returns void
+language plpgsql security definer set search_path = ''
+as $$
+begin
+  if auth.uid() is null or (
+    not public.has_salon_role(p_salon_id, array['OWNER','ADMIN']::public.member_role[])
+    and not public.is_platform_admin()
+  ) then
+    raise exception 'Not authorized';
+  end if;
+end;
+$$;
+
+create or replace function public.refresh_salon_floor_queue(p_salon_id uuid)
+returns void
+language plpgsql security definer set search_path = ''
+as $$
+declare
+  r record;
+  v_start timestamptz;
+  v_wait integer;
+begin
+  perform public.assert_floor_admin(p_salon_id);
+  for r in
+    select qe.id, qe.queue_number
+    from public.queue_entries qe
+    where qe.salon_id = p_salon_id
+      and qe.queue_date = (now() at time zone 'Asia/Kolkata')::date
+      and qe.status = 'WAITING'
+    order by qe.queue_number
+  loop
+    select greatest(
+      now(),
+      coalesce(min(bs.end_at), now())
+    ) into v_start
+    from public.employees e
+    left join public.booking_staff bs
+      on bs.employee_id = e.id and bs.status = 'ACTIVE' and bs.end_at > now()
+    where e.salon_id = p_salon_id and e.status = 'ACTIVE'
+      and not exists (
+        select 1 from public.employee_floor_status fs
+        where fs.employee_id = e.id and fs.status in ('BREAK', 'OFFLINE')
+      );
+    v_wait := greatest(0, ceil(extract(epoch from (v_start - now())) / 60.0)::integer);
+    update public.queue_entries
+    set estimated_wait_minutes = v_wait,
+        estimated_start_at = v_start
+    where id = r.id;
+  end loop;
+end;
+$$;
+
+create or replace function public.create_walkin_booking(
+  p_salon_id uuid,
+  p_customer_name text,
+  p_customer_phone text default null,
+  p_service_id uuid default null,
+  p_preferred_employee_id uuid default null,
+  p_assignment_mode text default 'QUEUE'
+)
+returns table (booking_id uuid, booking_status public.booking_status, queue_number integer, assigned_employee_name text)
+language plpgsql security definer set search_path = ''
+as $$
+declare
+  v_customer_id uuid;
+  v_service public.services%rowtype;
+  v_employee_id uuid;
+  v_employee_name text;
+  v_start timestamptz := now();
+  v_end timestamptz;
+  v_status public.booking_status := 'WAITING';
+  v_queue_status public.queue_status := 'WAITING';
+  v_queue_number integer;
+  v_booking_id uuid;
+  v_queue_date date := (now() at time zone 'Asia/Kolkata')::date;
+begin
+  perform public.assert_floor_admin(p_salon_id);
+  if length(trim(coalesce(p_customer_name, ''))) < 2 then raise exception 'Customer name is required'; end if;
+  if p_assignment_mode not in ('AUTO', 'MANUAL', 'QUEUE') then raise exception 'Invalid assignment mode'; end if;
+
+  select * into v_service from public.services
+  where id = p_service_id and salon_id = p_salon_id and is_active;
+  if not found then raise exception 'Selected service is unavailable'; end if;
+
+  if nullif(trim(p_customer_phone), '') is not null then
+    select id into v_customer_id from public.profiles
+    where phone = trim(p_customer_phone) limit 1;
+  end if;
+
+  if p_assignment_mode <> 'QUEUE' then
+    if p_assignment_mode = 'MANUAL' then
+      v_employee_id := p_preferred_employee_id;
+    else
+      select e.id into v_employee_id
+      from public.employees e
+      where e.salon_id = p_salon_id and e.status = 'ACTIVE'
+        and not exists (select 1 from public.employee_floor_status fs where fs.employee_id = e.id and fs.status in ('BREAK','OFFLINE'))
+        and not exists (select 1 from public.employee_leaves l where l.employee_id = e.id and l.status = 'APPROVED' and now() between l.start_at and l.end_at)
+        and (not exists (select 1 from public.employee_skills es where es.employee_id = e.id)
+          or exists (select 1 from public.employee_skills es where es.employee_id = e.id and es.service_id = p_service_id))
+        and not exists (select 1 from public.booking_staff bs where bs.employee_id = e.id and bs.status = 'ACTIVE' and bs.end_at > now())
+        and not exists (select 1 from public.booking_staff bs where bs.employee_id = e.id and bs.status = 'ACTIVE' and bs.end_at > now())
+      order by e.created_at limit 1;
+    end if;
+    if v_employee_id is null then raise exception 'No eligible barber is available'; end if;
+    if not exists (
+      select 1 from public.employees e
+      where e.id = v_employee_id and e.salon_id = p_salon_id and e.status = 'ACTIVE'
+        and not exists (select 1 from public.employee_floor_status fs where fs.employee_id = e.id and fs.status in ('BREAK','OFFLINE'))
+        and (not exists (select 1 from public.employee_skills es where es.employee_id = e.id)
+          or exists (select 1 from public.employee_skills es where es.employee_id = e.id and es.service_id = p_service_id))
+    ) then raise exception 'Barber is unavailable or not qualified'; end if;
+    select employee_name into v_employee_name from public.employees where id = v_employee_id;
+    v_status := 'IN_PROGRESS';
+    v_queue_status := 'SERVING';
+    v_end := v_start + make_interval(mins => v_service.duration_minutes + v_service.buffer_minutes);
+  else
+    v_end := v_start + make_interval(mins => v_service.duration_minutes);
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended(p_salon_id::text || ':' || v_queue_date::text, 0));
+  select coalesce(max(qe.queue_number), 0) + 1 into v_queue_number
+  from public.queue_entries qe
+  where qe.salon_id = p_salon_id and qe.queue_date = v_queue_date;
+
+  insert into public.bookings (
+    salon_id, customer_id, customer_name_snapshot, customer_phone_snapshot,
+    booking_number, booking_type, status, scheduled_start, scheduled_end,
+    actual_start, subtotal_paise, total_paise, payment_status
+  ) values (
+    p_salon_id, v_customer_id, trim(p_customer_name), nullif(trim(p_customer_phone), ''),
+    'WI-' || to_char(now(), 'YYYYMMDDHH24MISS') || '-' || substr(gen_random_uuid()::text, 1, 6),
+    'WALK_IN', v_status, v_start, v_end,
+    case when v_status = 'IN_PROGRESS' then v_start end,
+    v_service.price_paise, v_service.price_paise, 'PAY_AT_SALON'
+  ) returning id into v_booking_id;
+
+  insert into public.booking_items (salon_id, booking_id, service_id, service_name_snapshot, unit_price_paise, duration_minutes)
+  values (p_salon_id, v_booking_id, v_service.id, v_service.name, v_service.price_paise, v_service.duration_minutes);
+  insert into public.queue_entries (
+    salon_id, booking_id, customer_id, customer_name_snapshot, customer_phone_snapshot,
+    queue_date, queue_number, estimated_wait_minutes, estimated_start_at, status, service_started_at
+  ) values (
+    p_salon_id, v_booking_id, v_customer_id, trim(p_customer_name), nullif(trim(p_customer_phone), ''),
+    v_queue_date, v_queue_number, case when v_status = 'IN_PROGRESS' then 0 else null end,
+    case when v_status = 'IN_PROGRESS' then v_start end, v_queue_status,
+    case when v_status = 'IN_PROGRESS' then v_start end
+  );
+  if v_employee_id is not null then
+    insert into public.booking_staff (salon_id, booking_id, employee_id, start_at, end_at, assignment_type)
+    values (p_salon_id, v_booking_id, v_employee_id, v_start, v_end, case when p_assignment_mode = 'MANUAL' then 'MANUAL' else 'AUTOMATIC' end);
+  end if;
+  insert into public.audit_logs (salon_id, actor_id, action, entity_type, entity_id, new_values)
+  values (p_salon_id, auth.uid(), 'CREATE_WALKIN', 'BOOKING', v_booking_id,
+    jsonb_build_object('customer_name', trim(p_customer_name), 'assignment_mode', p_assignment_mode));
+  perform public.refresh_salon_floor_queue(p_salon_id);
+  return query select v_booking_id, v_status, v_queue_number, v_employee_name;
+end;
+$$;
+
+create or replace function public.complete_service(p_salon_id uuid, p_booking_id uuid)
+returns void language plpgsql security definer set search_path = ''
+as $$
+begin
+  perform public.assert_floor_admin(p_salon_id);
+  if not exists (select 1 from public.bookings where id = p_booking_id and salon_id = p_salon_id for update) then raise exception 'Booking not found'; end if;
+  update public.bookings set status = 'COMPLETED', actual_end = now() where id = p_booking_id and status = 'IN_PROGRESS';
+  update public.booking_staff set status = 'RELEASED', end_at = least(end_at, now()) where booking_id = p_booking_id and status = 'ACTIVE';
+  update public.queue_entries set status = 'COMPLETED', completed_at = now() where booking_id = p_booking_id and status in ('SERVING','CALLED');
+  insert into public.audit_logs (salon_id, actor_id, action, entity_type, entity_id) values (p_salon_id, auth.uid(), 'COMPLETE_SERVICE', 'BOOKING', p_booking_id);
+  perform public.refresh_salon_floor_queue(p_salon_id);
+end;
+$$;
+
+create or replace function public.assign_waiting_customer(
+  p_salon_id uuid,
+  p_booking_id uuid,
+  p_employee_id uuid
+)
+returns void language plpgsql security definer set search_path = ''
+as $$
+declare
+  v_duration integer;
+  v_service_id uuid;
+  v_start timestamptz := now();
+  v_end timestamptz;
+begin
+  perform public.assert_floor_admin(p_salon_id);
+  select bi.service_id, bi.duration_minutes into v_service_id, v_duration
+  from public.booking_items bi
+  join public.bookings b on b.id = bi.booking_id and b.salon_id = p_salon_id
+  where bi.booking_id = p_booking_id order by bi.created_at limit 1;
+  if v_service_id is null then raise exception 'Booking service not found'; end if;
+  if not exists (
+    select 1 from public.queue_entries where booking_id = p_booking_id and status in ('WAITING','CALLED')
+  ) then raise exception 'Customer is not waiting'; end if;
+  if not exists (
+    select 1 from public.employees e
+    where e.id = p_employee_id and e.salon_id = p_salon_id and e.status = 'ACTIVE'
+      and not exists (select 1 from public.employee_floor_status fs where fs.employee_id = e.id and fs.status in ('BREAK','OFFLINE'))
+      and not exists (select 1 from public.booking_staff bs where bs.employee_id = e.id and bs.status = 'ACTIVE' and bs.end_at > now())
+      and (not exists (select 1 from public.employee_skills es where es.employee_id = e.id)
+        or exists (select 1 from public.employee_skills es where es.employee_id = e.id and es.service_id = v_service_id))
+  ) then raise exception 'Barber is unavailable or not qualified'; end if;
+  v_end := v_start + make_interval(mins => v_duration);
+  insert into public.booking_staff (salon_id, booking_id, employee_id, start_at, end_at, assignment_type)
+  values (p_salon_id, p_booking_id, p_employee_id, v_start, v_end, 'MANUAL');
+  update public.bookings set status = 'IN_PROGRESS', actual_start = v_start where id = p_booking_id;
+  update public.queue_entries set status = 'SERVING', service_started_at = v_start, estimated_wait_minutes = 0, estimated_start_at = v_start where booking_id = p_booking_id;
+  insert into public.audit_logs (salon_id, actor_id, action, entity_type, entity_id) values (p_salon_id, auth.uid(), 'ASSIGN_WAITING_CUSTOMER', 'BOOKING', p_booking_id);
+  perform public.refresh_salon_floor_queue(p_salon_id);
+end;
+$$;
+
+create or replace function public.update_staff_availability(p_salon_id uuid, p_employee_id uuid, p_status text)
+returns void language plpgsql security definer set search_path = ''
+as $$
+begin
+  perform public.assert_floor_admin(p_salon_id);
+  if p_status not in ('AVAILABLE','BREAK','OFFLINE') then raise exception 'Invalid staff status'; end if;
+  if not exists (select 1 from public.employees where id = p_employee_id and salon_id = p_salon_id) then raise exception 'Employee not found'; end if;
+  if p_status = 'AVAILABLE' and exists (select 1 from public.booking_staff where employee_id = p_employee_id and status = 'ACTIVE' and end_at > now()) then
+    raise exception 'Complete the active service before marking this barber available';
+  end if;
+  insert into public.employee_floor_status (salon_id, employee_id, status)
+  values (p_salon_id, p_employee_id, p_status)
+  on conflict (employee_id) do update set status = excluded.status, updated_at = now();
+  insert into public.audit_logs (salon_id, actor_id, action, entity_type, entity_id, new_values)
+  values (p_salon_id, auth.uid(), 'UPDATE_STAFF_AVAILABILITY', 'EMPLOYEE', p_employee_id, jsonb_build_object('status', p_status));
+end;
+$$;
+
+create or replace function public.cancel_walkin_booking(p_salon_id uuid, p_booking_id uuid)
+returns void language plpgsql security definer set search_path = ''
+as $$
+begin
+  perform public.assert_floor_admin(p_salon_id);
+  update public.bookings set status = 'CANCELLED' where id = p_booking_id and salon_id = p_salon_id and status not in ('COMPLETED','CANCELLED');
+  if not found then raise exception 'Booking cannot be cancelled'; end if;
+  update public.booking_staff set status = 'CANCELLED' where booking_id = p_booking_id and status = 'ACTIVE';
+  update public.queue_entries set status = 'CANCELLED' where booking_id = p_booking_id and status in ('WAITING','CALLED','SERVING');
+  insert into public.audit_logs (salon_id, actor_id, action, entity_type, entity_id) values (p_salon_id, auth.uid(), 'CANCEL_WALKIN', 'BOOKING', p_booking_id);
+  perform public.refresh_salon_floor_queue(p_salon_id);
+end;
+$$;
+
+revoke all on function public.create_walkin_booking(uuid,text,text,uuid,uuid,text) from public;
+revoke all on function public.complete_service(uuid,uuid) from public;
+revoke all on function public.assign_waiting_customer(uuid,uuid,uuid) from public;
+revoke all on function public.update_staff_availability(uuid,uuid,text) from public;
+revoke all on function public.cancel_walkin_booking(uuid,uuid) from public;
+revoke all on function public.refresh_salon_floor_queue(uuid) from public;
+grant execute on function public.create_walkin_booking(uuid,text,text,uuid,uuid,text) to authenticated;
+grant execute on function public.complete_service(uuid,uuid) to authenticated;
+grant execute on function public.assign_waiting_customer(uuid,uuid,uuid) to authenticated;
+grant execute on function public.update_staff_availability(uuid,uuid,text) to authenticated;
+grant execute on function public.cancel_walkin_booking(uuid,uuid) to authenticated;
+grant execute on function public.refresh_salon_floor_queue(uuid) to authenticated;
+
+
+-- BOOKSALOON | 014: Cross-platform queue notification devices and events
+
+create table if not exists public.device_push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  device_id text not null,
+  platform text not null check (platform in ('WEB', 'ANDROID')),
+  endpoint text,
+  subscription_json jsonb,
+  permission_status text not null default 'UNKNOWN',
+  user_agent text,
+  last_seen_at timestamptz not null default now(),
+  revoked_at timestamptz,
+  created_at timestamptz not null default now(),
+  unique (user_id, device_id)
+);
+
+create table if not exists public.queue_notification_events (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  salon_id uuid not null references public.salons(id) on delete cascade,
+  booking_id uuid not null references public.bookings(id) on delete cascade,
+  event_type text not null check (event_type in (
+    'BOOKING_CONFIRMED', 'QUEUE_JOINED', 'QUEUE_ETA_UPDATED', 'TURN_APPROACHING',
+    'CUSTOMER_NEXT', 'CHAIR_READY', 'BOOKING_CANCELLED', 'SERVICE_STARTED', 'SERVICE_COMPLETED'
+  )),
+  event_key text not null unique,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists queue_notification_events_user_idx
+  on public.queue_notification_events(user_id, created_at desc);
+
+alter table public.device_push_subscriptions enable row level security;
+alter table public.queue_notification_events enable row level security;
+
+drop policy if exists device_push_subscriptions_own on public.device_push_subscriptions;
+create policy device_push_subscriptions_own on public.device_push_subscriptions
+for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+drop policy if exists queue_notification_events_own_select on public.queue_notification_events;
+create policy queue_notification_events_own_select on public.queue_notification_events
+for select to authenticated using (user_id = auth.uid() or public.is_platform_admin());
+
+create or replace function public.register_device_push_subscription(
+  p_device_id text,
+  p_platform text,
+  p_endpoint text default null,
+  p_subscription_json jsonb default null,
+  p_permission_status text default 'UNKNOWN',
+  p_user_agent text default null
+)
+returns uuid language plpgsql security definer set search_path = ''
+as $$
+declare v_id uuid;
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+  if p_platform not in ('WEB', 'ANDROID') then raise exception 'Invalid platform'; end if;
+  insert into public.device_push_subscriptions (
+    user_id, device_id, platform, endpoint, subscription_json,
+    permission_status, user_agent, last_seen_at, revoked_at
+  ) values (
+    auth.uid(), trim(p_device_id), p_platform, p_endpoint, p_subscription_json,
+    p_permission_status, p_user_agent, now(), null
+  )
+  on conflict (user_id, device_id) do update set
+    platform = excluded.platform,
+    endpoint = excluded.endpoint,
+    subscription_json = excluded.subscription_json,
+    permission_status = excluded.permission_status,
+    user_agent = excluded.user_agent,
+    last_seen_at = now(),
+    revoked_at = null
+  returning id into v_id;
+  return v_id;
+end;
+$$;
+
+revoke all on function public.register_device_push_subscription(text,text,text,jsonb,text,text) from public;
+grant execute on function public.register_device_push_subscription(text,text,text,jsonb,text,text) to authenticated;
+
+do $$
+begin
+  if exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'queue_entries') then
+    null;
+  end if;
+exception when undefined_object then
+  null;
+end $$;
+
+
+-- BOOKSALOON | 015: Transactional queue notification event generation
+
+create or replace function public.enqueue_queue_notification_event(
+  p_booking_id uuid,
+  p_event_type text,
+  p_event_key text,
+  p_payload jsonb default '{}'::jsonb
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_id uuid;
+  v_customer_id uuid;
+  v_salon_id uuid;
+begin
+  if p_event_type not in (
+    'BOOKING_CONFIRMED', 'QUEUE_JOINED', 'QUEUE_ETA_UPDATED', 'TURN_APPROACHING',
+    'CUSTOMER_NEXT', 'CHAIR_READY', 'BOOKING_CANCELLED', 'SERVICE_STARTED', 'SERVICE_COMPLETED'
+  ) then
+    raise exception 'Invalid queue notification event type';
+  end if;
+  if nullif(trim(p_event_key), '') is null then
+    raise exception 'Queue notification event key is required';
+  end if;
+  select b.customer_id, b.salon_id into v_customer_id, v_salon_id
+  from public.bookings b
+  where b.id = p_booking_id;
+  if v_customer_id is null or v_salon_id is null then return null; end if;
+
+  insert into public.queue_notification_events (
+    user_id, salon_id, booking_id, event_type, event_key, payload
+  )
+  values (
+    v_customer_id, v_salon_id, p_booking_id, p_event_type, p_event_key, coalesce(p_payload, '{}'::jsonb)
+  )
+  on conflict (event_key) do nothing
+  returning id into v_id;
+  return v_id;
+end;
+$$;
+
+create or replace function public.queue_booking_event_trigger()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_name text;
+  v_service text;
+begin
+  if new.customer_id is null then return new; end if;
+  select coalesce(nullif(new.customer_name_snapshot, ''), p.full_name, 'Customer') into v_name
+  from public.profiles p where p.id = new.customer_id;
+  select string_agg(bi.service_name_snapshot, ', ' order by bi.created_at) into v_service
+  from public.booking_items bi where bi.booking_id = new.id;
+
+  if tg_op = 'INSERT' and new.booking_type in ('NORMAL', 'QUICK_TURN') and new.status = 'CONFIRMED' then
+    perform public.enqueue_queue_notification_event(
+      new.id, 'BOOKING_CONFIRMED', 'booking-confirmed:' || new.id::text,
+      jsonb_build_object('customerName', v_name, 'service', coalesce(v_service, 'Salon service'), 'queueNumber', null)
+    );
+  elsif tg_op = 'UPDATE' then
+    if old.status is distinct from new.status then
+      if new.status = 'CONFIRMED' then
+        perform public.enqueue_queue_notification_event(new.id, 'BOOKING_CONFIRMED', 'booking-confirmed:' || new.id::text, jsonb_build_object('customerName', v_name, 'service', coalesce(v_service, 'Salon service')));
+      elsif new.status = 'CANCELLED' then
+        perform public.enqueue_queue_notification_event(new.id, 'BOOKING_CANCELLED', 'booking-cancelled:' || new.id::text, jsonb_build_object('customerName', v_name));
+      elsif new.status = 'IN_PROGRESS' then
+        perform public.enqueue_queue_notification_event(new.id, 'SERVICE_STARTED', 'service-started:' || new.id::text, jsonb_build_object('customerName', v_name, 'service', coalesce(v_service, 'Salon service')));
+      elsif new.status = 'COMPLETED' then
+        perform public.enqueue_queue_notification_event(new.id, 'SERVICE_COMPLETED', 'service-completed:' || new.id::text, jsonb_build_object('customerName', v_name, 'service', coalesce(v_service, 'Salon service')));
+      end if;
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.queue_entry_event_trigger()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_name text := coalesce(nullif(new.customer_name_snapshot, ''), 'Customer');
+begin
+  if new.customer_id is null then return new; end if;
+  if tg_op = 'INSERT' and new.status = 'WAITING' then
+    perform public.enqueue_queue_notification_event(
+      new.booking_id, 'QUEUE_JOINED', 'queue-joined:' || new.id::text,
+      jsonb_build_object('queueNumber', new.queue_number, 'estimatedWaitMinutes', new.estimated_wait_minutes, 'estimatedStartAt', new.estimated_start_at)
+    );
+  elsif tg_op = 'UPDATE' then
+    if old.status is distinct from new.status then
+      if new.status = 'CALLED' then
+        perform public.enqueue_queue_notification_event(new.booking_id, 'CUSTOMER_NEXT', 'customer-next:' || new.id::text || ':' || new.status::text, jsonb_build_object('queueNumber', new.queue_number, 'customerName', v_name));
+      elsif new.status = 'SERVING' then
+        perform public.enqueue_queue_notification_event(new.booking_id, 'CHAIR_READY', 'chair-ready:' || new.id::text || ':' || new.status::text, jsonb_build_object('queueNumber', new.queue_number));
+      end if;
+    end if;
+    if old.estimated_wait_minutes is distinct from new.estimated_wait_minutes
+       or old.estimated_start_at is distinct from new.estimated_start_at then
+      perform public.enqueue_queue_notification_event(
+        new.booking_id, 'QUEUE_ETA_UPDATED',
+        'queue-eta:' || new.id::text || ':' || coalesce(new.estimated_wait_minutes::text, 'null') || ':' || coalesce(new.estimated_start_at::text, 'null'),
+        jsonb_build_object('queueNumber', new.queue_number, 'estimatedWaitMinutes', new.estimated_wait_minutes, 'estimatedStartAt', new.estimated_start_at)
+      );
+      if new.estimated_wait_minutes is not null and new.estimated_wait_minutes between 1 and 10 then
+        perform public.enqueue_queue_notification_event(new.booking_id, 'TURN_APPROACHING', 'turn-approaching:' || new.id::text || ':' || coalesce(new.estimated_wait_minutes::text, 'null') || ':' || coalesce(new.estimated_start_at::text, 'null'), jsonb_build_object('estimatedWaitMinutes', new.estimated_wait_minutes));
+      end if;
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists queue_booking_notification_events on public.bookings;
+create trigger queue_booking_notification_events
+after insert or update of status, updated_at on public.bookings
+for each row execute function public.queue_booking_event_trigger();
+
+drop trigger if exists queue_entry_notification_events on public.queue_entries;
+create trigger queue_entry_notification_events
+after insert or update of status, estimated_wait_minutes, estimated_start_at on public.queue_entries
+for each row execute function public.queue_entry_event_trigger();
+
+create or replace function public.staff_availability_event_trigger()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if tg_op = 'UPDATE' then
+    if old.status is distinct from new.status then
+      perform public.refresh_salon_floor_queue(new.salon_id);
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists staff_availability_notification_events on public.employee_floor_status;
+create trigger staff_availability_notification_events
+after insert or update of status on public.employee_floor_status
+for each row execute function public.staff_availability_event_trigger();
+
+revoke all on function public.enqueue_queue_notification_event(uuid,text,text,jsonb) from public;
+revoke all on function public.queue_booking_event_trigger() from public;
+revoke all on function public.queue_entry_event_trigger() from public;
+revoke all on function public.staff_availability_event_trigger() from public;
+
+
+-- BOOKSALOON | 016: Notification delivery leases, attempts, retries, and preferences
+
+alter table public.queue_notification_events
+  add column if not exists delivery_status text not null default 'PENDING',
+  add column if not exists attempt_count integer not null default 0,
+  add column if not exists next_attempt_at timestamptz not null default now(),
+  add column if not exists last_attempt_at timestamptz,
+  add column if not exists delivered_at timestamptz,
+  add column if not exists last_error text,
+  add column if not exists processing_token uuid,
+  add column if not exists processing_lease_until timestamptz;
+
+alter table public.queue_notification_events
+  drop constraint if exists queue_notification_events_delivery_status_check;
+alter table public.queue_notification_events
+  add constraint queue_notification_events_delivery_status_check
+  check (delivery_status in ('PENDING', 'PROCESSING', 'DELIVERED', 'PARTIAL', 'FAILED'));
+
+alter table public.queue_notification_events
+  drop constraint if exists queue_notification_events_event_type_check;
+alter table public.queue_notification_events
+  add constraint queue_notification_events_event_type_check
+  check (event_type in (
+    'BOOKING_CONFIRMED', 'QUEUE_JOINED', 'QUEUE_ETA_UPDATED', 'TURN_APPROACHING',
+    'CUSTOMER_NEXT', 'CHAIR_READY', 'BOOKING_CANCELLED', 'SERVICE_STARTED', 'SERVICE_COMPLETED'
+  ));
+
+create index if not exists queue_notification_events_claim_idx
+  on public.queue_notification_events (next_attempt_at, created_at)
+  where delivery_status in ('PENDING', 'PROCESSING');
+
+create table if not exists public.notification_preferences (
+  user_id uuid primary key references public.profiles(id) on delete cascade,
+  booking_updates boolean not null default true,
+  queue_updates boolean not null default true,
+  offers boolean not null default true,
+  announcements boolean not null default true,
+  browser_enabled boolean not null default true,
+  android_enabled boolean not null default true,
+  queue_enabled boolean not null default true,
+  turn_alerts_enabled boolean not null default true,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.notification_delivery_attempts (
+  id uuid primary key default gen_random_uuid(),
+  event_id uuid not null references public.queue_notification_events(id) on delete cascade,
+  device_id uuid not null references public.device_push_subscriptions(id) on delete cascade,
+  status text not null,
+  response_code integer,
+  error_message text,
+  attempted_at timestamptz not null default now()
+);
+
+alter table public.notification_preferences
+  add column if not exists browser_enabled boolean not null default true,
+  add column if not exists android_enabled boolean not null default true,
+  add column if not exists queue_enabled boolean not null default true,
+  add column if not exists turn_alerts_enabled boolean not null default true;
+
+alter table public.notification_preferences enable row level security;
+drop policy if exists notification_preferences_own_select_update on public.notification_preferences;
+create policy notification_preferences_own_select_update on public.notification_preferences
+for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+alter table public.notification_delivery_attempts
+  add column if not exists attempt_number integer not null default 1,
+  add column if not exists platform text,
+  add column if not exists permanent_failure boolean not null default false;
+
+alter table public.notification_delivery_attempts
+  drop constraint if exists notification_delivery_attempts_status_check;
+alter table public.notification_delivery_attempts
+  add constraint notification_delivery_attempts_status_check
+  check (status in ('SENT', 'FAILED', 'REVOKED'));
+
+alter table public.notification_delivery_attempts
+  drop constraint if exists notification_delivery_attempts_event_id_device_id_key;
+
+create index if not exists notification_delivery_attempts_lookup_idx
+  on public.notification_delivery_attempts (event_id, device_id, status);
+create unique index if not exists notification_delivery_attempts_event_device_attempt_idx
+  on public.notification_delivery_attempts (event_id, device_id, attempt_number);
+
+alter table public.notification_delivery_attempts enable row level security;
+drop policy if exists notification_delivery_attempts_own_select on public.notification_delivery_attempts;
+create policy notification_delivery_attempts_own_select on public.notification_delivery_attempts
+for select to authenticated using (exists (
+  select 1 from public.queue_notification_events e
+  where e.id = event_id and (e.user_id = auth.uid() or public.is_platform_admin())
+));
+
+create or replace function public.claim_queue_notification_events(
+  p_limit integer default 50,
+  p_lease_seconds integer default 300
+)
+returns table (
+  id uuid,
+  user_id uuid,
+  booking_id uuid,
+  event_type text,
+  payload jsonb,
+  attempt_count integer,
+  processing_token uuid,
+  processing_lease_until timestamptz
+)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if p_limit < 1 or p_limit > 100 or p_lease_seconds < 30 or p_lease_seconds > 3600 then
+    raise exception 'Invalid claim parameters';
+  end if;
+  return query
+  with candidates as (
+    select e.id
+    from public.queue_notification_events e
+    where e.attempt_count < 5
+      and (
+        (e.delivery_status in ('PENDING', 'FAILED', 'PARTIAL') and e.next_attempt_at <= now())
+        or (e.delivery_status = 'PROCESSING' and coalesce(e.processing_lease_until, 'epoch'::timestamptz) < now())
+      )
+    order by e.created_at
+    for update skip locked
+    limit p_limit
+  ),
+  claimed as (
+    update public.queue_notification_events e
+    set delivery_status = 'PROCESSING',
+        attempt_count = e.attempt_count + 1,
+        last_attempt_at = now(),
+        processing_token = gen_random_uuid(),
+        processing_lease_until = now() + make_interval(secs => p_lease_seconds)
+    from candidates c
+    where e.id = c.id
+    returning e.id, e.user_id, e.booking_id, e.event_type, e.payload,
+      e.attempt_count, e.processing_token, e.processing_lease_until
+  )
+  select * from claimed;
+end;
+$$;
+
+revoke all on function public.claim_queue_notification_events(integer, integer) from public, anon, authenticated;
+grant execute on function public.claim_queue_notification_events(integer, integer) to service_role;
