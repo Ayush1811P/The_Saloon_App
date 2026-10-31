@@ -33,7 +33,7 @@ import {
   useParams,
   useLocation,
 } from 'react-router-dom'
-import { customerProfile, notifications, offers, salons, serviceCatalog } from './data/mockData'
+import { customerProfile, offers, salons, serviceCatalog } from './data/mockData'
 import { issueAdminSession, revokeAdminSession, validateAdminSession } from './lib/adminService'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 
@@ -372,6 +372,15 @@ function AppHeader({ title, subtitle, userName, onLogout }) {
           </div>
           <button
             type="button"
+            onClick={() => navigate('/customer/notifications')}
+            aria-label="Open notifications"
+            title="Notifications"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700"
+          >
+            <Bell size={18} />
+          </button>
+          <button
+            type="button"
             onClick={onLogout}
             className="inline-flex items-center gap-2 rounded-full border border-slate-200 px-3 py-2 text-sm text-slate-600 transition hover:bg-slate-50"
           >
@@ -621,7 +630,7 @@ function ProfileCard({ user }) {
   )
 }
 
-function ConfirmationDialog({ title, message, onClose, onConfirm }) {
+function ConfirmationDialog({ title, message, onClose, onConfirm, submitting = false }) {
   return (
     <AnimatePresence>
       <motion.div
@@ -643,7 +652,7 @@ function ConfirmationDialog({ title, message, onClose, onConfirm }) {
           <p className="mt-2 text-sm leading-6 text-slate-600">{message}</p>
           <div className="mt-6 flex gap-3">
             <SecondaryButton className="flex-1" onClick={onClose}>Close</SecondaryButton>
-            <PrimaryButton className="flex-1" onClick={onConfirm}>Confirm</PrimaryButton>
+            <PrimaryButton className="flex-1" onClick={onConfirm} disabled={submitting}>{submitting ? 'Please wait...' : 'Confirm'}</PrimaryButton>
           </div>
         </motion.div>
       </motion.div>
@@ -651,15 +660,44 @@ function ConfirmationDialog({ title, message, onClose, onConfirm }) {
   )
 }
 
-function HomePage({ userName, userBookings, onBookingCreated }) {
+function HomePage({ userName, userId, userBookings, onBookingCreated }) {
   const { data: serviceList = serviceCatalog, isLoading } = useQuery({
     queryKey: ['services-home'],
-    queryFn: async () => serviceCatalog,
+    queryFn: async () => {
+      if (!isSupabaseConfigured) return serviceCatalog
+      const { data, error } = await supabase
+        .from('services')
+        .select('id, name, description, price_paise, duration_minutes, is_active')
+        .eq('is_active', true)
+        .order('created_at')
+      if (error) throw new Error(error.message)
+      return (data || []).map((service) => ({
+        ...service,
+        price: service.price_paise / 100,
+        duration: service.duration_minutes,
+        offers: ['Available'],
+        employees: [],
+      }))
+    },
+  })
+  const { data: salonStatus } = useQuery({
+    queryKey: ['customer-salon-status'],
+    enabled: isSupabaseConfigured,
+    queryFn: async () => {
+      const { data, error } = await supabase.from('salons').select('id, status').order('created_at', { ascending: true }).limit(1).single()
+      if (error) throw new Error(error.message)
+      return data
+    },
+    refetchInterval: 25000,
   })
 
   const [selectedServices, setSelectedServices] = useState([])
   const [isBookingOpen, setIsBookingOpen] = useState(false)
   const [isPriority, setIsPriority] = useState(false)
+  const [showClosedPopup, setShowClosedPopup] = useState(false)
+  const [bookingError, setBookingError] = useState('')
+  const [bookingSubmitting, setBookingSubmitting] = useState(false)
+  const salonClosed = salonStatus?.status === 'PAUSED'
 
   if (isLoading) {
     return <LoadingScreen />
@@ -677,6 +715,49 @@ function HomePage({ userName, userBookings, onBookingCreated }) {
 
   const total = selectedServices.reduce((sum, item) => sum + item.price, 0)
   const totalWithPriority = total + (isPriority ? 50 : 0)
+  const confirmBooking = async () => {
+    if (salonClosed) {
+      setIsBookingOpen(false)
+      setShowClosedPopup(true)
+      return
+    }
+    if (!isSupabaseConfigured || !salonStatus?.id || !userId) {
+      setBookingError('Booking is unavailable until your salon account is connected.')
+      return
+    }
+    setBookingSubmitting(true)
+    setBookingError('')
+    const { data, error } = await supabase.rpc('create_auto_assigned_booking', {
+      p_salon_id: salonStatus.id,
+      p_service_ids: selectedServices.map((service) => service.id),
+      p_priority: isPriority,
+    })
+    setBookingSubmitting(false)
+    if (error) {
+      if (error.message.includes('SALON_CLOSED')) {
+        setIsBookingOpen(false)
+        setShowClosedPopup(true)
+      } else {
+        setBookingError(error.message)
+      }
+      return
+    }
+    const result = data?.[0]
+    onBookingCreated({
+      id: result.booking_id,
+      service: selectedServices.map((service) => service.name).join(', '),
+      salon: 'BOOKSALOON Demo Salon',
+      amount: `₹${totalWithPriority}`,
+      barber: result.employee_name,
+      chair: 'To be assigned',
+      date: new Date(result.estimated_start_at).toLocaleDateString('en-IN'),
+      status: result.booking_status === 'CONFIRMED' ? 'Confirmed' : 'Waiting',
+      estimatedWait: result.estimated_wait_minutes,
+    })
+    setIsBookingOpen(false)
+    setSelectedServices([])
+    setIsPriority(false)
+  }
 
   return (
     <div className="space-y-6 pb-24">
@@ -696,10 +777,11 @@ function HomePage({ userName, userBookings, onBookingCreated }) {
           <PrimaryButton
             type="button"
             onClick={() => {
-              if (selectedServices.length > 0) setIsBookingOpen(true)
+              if (salonClosed) setShowClosedPopup(true)
+              else if (selectedServices.length > 0) setIsBookingOpen(true)
             }}
-            disabled={selectedServices.length === 0}
-            className={`w-full sm:py-4 ${selectedServices.length === 0 ? 'cursor-not-allowed opacity-50' : ''}`}
+            disabled={selectedServices.length === 0 || salonClosed}
+            className={`w-full sm:py-4 ${selectedServices.length === 0 || salonClosed ? 'cursor-not-allowed opacity-50' : ''}`}
           >
             Book Appointment <ArrowRight size={16} />
           </PrimaryButton>
@@ -733,7 +815,11 @@ function HomePage({ userName, userBookings, onBookingCreated }) {
                   <span className="text-xl font-black tracking-[-0.06em] text-slate-900">₹{service.price}</span>
                   <button
                     type="button"
-                    onClick={() => addService(service)}
+                    onClick={() => {
+                      if (salonClosed) setShowClosedPopup(true)
+                      else addService(service)
+                    }}
+                    disabled={salonClosed}
                     className={`rounded-full px-3 py-2 text-xs font-semibold ${
                       selected ? 'bg-emerald-500 text-white' : 'bg-slate-900 text-white'
                     }`}
@@ -782,7 +868,7 @@ function HomePage({ userName, userBookings, onBookingCreated }) {
           </div>
 
           <div className="mt-4 flex justify-end">
-            <PrimaryButton type="button" onClick={() => setIsBookingOpen(true)}>
+            <PrimaryButton type="button" onClick={() => salonClosed ? setShowClosedPopup(true) : setIsBookingOpen(true)} disabled={salonClosed}>
               Confirm booking
             </PrimaryButton>
           </div>
@@ -797,22 +883,17 @@ function HomePage({ userName, userBookings, onBookingCreated }) {
           title="Appointment booked"
           message={`Your appointment is confirmed for ${selectedServices.map((service) => service.name).join(', ')}. Please reach 5 minutes before your appointment time. When your turn is called, you must arrive within 10 minutes or the seat may be given to another customer. ${isPriority ? 'Priority / Emergency has been added for ₹50 extra.' : 'No priority option selected.'}`}
           onClose={() => setIsBookingOpen(false)}
-          onConfirm={() => {
-            const booking = {
-              id: `BK-${Date.now().toString().slice(-6)}`,
-              service: selectedServices.map((service) => service.name).join(', '),
-              salon: 'BOOKSALOON Demo Salon',
-              amount: `₹${totalWithPriority}`,
-              barber: 'To be assigned',
-              chair: 'To be assigned',
-              date: new Date().toLocaleDateString('en-IN'),
-              status: 'Pending',
-            }
-            onBookingCreated(booking)
-            setIsBookingOpen(false)
-            setSelectedServices([])
-            setIsPriority(false)
-          }}
+          onConfirm={confirmBooking}
+          submitting={bookingSubmitting}
+        />
+      )}
+      {bookingError && <p className="rounded-2xl bg-rose-50 px-3 py-2 text-sm text-rose-600">{bookingError}</p>}
+      {showClosedPopup && (
+        <ConfirmationDialog
+          title="Salon is closed"
+          message="The salon is temporarily closed and cannot receive appointments right now. Please try again later."
+          onClose={() => setShowClosedPopup(false)}
+          onConfirm={() => setShowClosedPopup(false)}
         />
       )}
 
@@ -926,12 +1007,44 @@ function BookingsPage({ userBookings }) {
   )
 }
 
-function NotificationsPage() {
+function NotificationsPage({ userId }) {
+  const [userNotifications, setUserNotifications] = useState([])
+
+  useEffect(() => {
+    let active = true
+    let channel
+
+    const subscribeToNotifications = () => {
+      if (!isSupabaseConfigured || !userId) return
+      channel = supabase
+        .channel(`customer-notifications-${userId}`)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` }, (payload) => {
+          setUserNotifications((current) => [payload.new, ...current])
+        })
+        .subscribe()
+    }
+
+    subscribeToNotifications()
+    return () => {
+      active = false
+      if (channel) supabase.removeChannel(channel)
+    }
+  }, [userId])
+
   return (
     <div className="space-y-4 pb-24">
-      {notifications.map((notification) => (
-        <NotificationCard key={notification.title} notification={notification} />
+      {userNotifications.map((notification) => (
+        <NotificationCard
+          key={notification.id}
+          notification={{
+            title: notification.title,
+            body: notification.message,
+            time: new Date(notification.created_at).toLocaleString(),
+            icon: 'bell',
+          }}
+        />
       ))}
+      {userNotifications.length === 0 && <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">No new notifications.</p>}
     </div>
   )
 }
@@ -1102,13 +1215,14 @@ function AdminLogin({ onLogin }) {
 
 function AdminControls({ section, selectedSalonId, onSalonCreated }) {
   const [form, setForm] = useState({})
+  const [serviceFormOpen, setServiceFormOpen] = useState(false)
   const [message, setMessage] = useState('')
   const queryClient = useQueryClient()
   const tableBySection = {
     'Services & Pricing': 'services',
     'Staff Management': 'employees',
     'Business Hours': 'salon_hours',
-    'Waiting Time Settings': 'salon_settings',
+    'Waiting Time Settings': 'services',
     Appointments: 'bookings',
     Notifications: 'notifications',
   }
@@ -1130,6 +1244,15 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
       const { data, error } = await request
       if (error) throw new Error(error.message)
       return data || []
+    },
+  })
+  const salonStatusQuery = useQuery({
+    queryKey: ['admin-salon-status', selectedSalonId],
+    enabled: Boolean(selectedSalonId && section === 'Business Hours'),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('salons').select('status').eq('id', selectedSalonId).single()
+      if (error) throw new Error(error.message)
+      return data
     },
   })
 
@@ -1176,21 +1299,22 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
           is_closed: Boolean(form.is_closed),
         }
       } else if (section === 'Waiting Time Settings') {
-        if (Number(form.average_service_minutes) <= 0) throw new Error('Average service time must be greater than zero.')
-        payload = { salon_id: selectedSalonId, setting_key: 'average_service_minutes', setting_value: { minutes: Number(form.average_service_minutes) } }
+        if (Number(form.buffer_minutes) < 0) throw new Error('Waiting time cannot be negative.')
+        payload = { buffer_minutes: Number(form.buffer_minutes || 0) }
       } else {
         throw new Error('Choose a supported admin setting.')
       }
 
       const existingId = form.id
-      const request = section === 'Business Hours' || section === 'Waiting Time Settings'
-        ? supabase.from(table).upsert(payload, { onConflict: section === 'Business Hours' ? 'salon_id,day_of_week' : 'salon_id,setting_key' })
+      const request = section === 'Business Hours'
+        ? supabase.from(table).upsert(payload, { onConflict: 'salon_id,day_of_week' })
         : existingId
         ? supabase.from(table).update(payload).eq('id', existingId).eq('salon_id', selectedSalonId)
         : supabase.from(table).insert(payload)
       const { error } = await request
       if (error) throw new Error(error.message)
       setForm({})
+      if (section === 'Services & Pricing') setServiceFormOpen(false)
       setMessage('Saved successfully.')
       queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })
     } catch (error) {
@@ -1211,9 +1335,59 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
   }
 
   const edit = (row) => {
-    if (section === 'Services & Pricing') setForm({ ...row, price: row.price_paise / 100 })
-    else if (section === 'Waiting Time Settings') setForm({ ...row, average_service_minutes: row.setting_value?.minutes || '' })
+    if (section === 'Services & Pricing') {
+      setForm({ ...row, price: row.price_paise / 100, buffer_minutes: row.buffer_minutes || 0 })
+      setServiceFormOpen(true)
+    }
+    else if (section === 'Waiting Time Settings') setForm({ id: row.id, buffer_minutes: row.buffer_minutes || 0, name: row.name })
     else setForm(row)
+  }
+
+  const toggleService = async (row) => {
+    const { error } = await supabase
+      .from('services')
+      .update({ is_active: !row.is_active })
+      .eq('id', row.id)
+      .eq('salon_id', selectedSalonId)
+    if (error) setMessage(error.message)
+    else {
+      setMessage(row.is_active ? 'Service closed.' : 'Service reopened.')
+      queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })
+    }
+  }
+
+  const saveBusinessHours = async (event) => {
+    event.preventDefault()
+    setMessage('')
+    const hours = form.businessHours || {}
+    const payload = Object.entries(hours).map(([day, values]) => ({
+      salon_id: selectedSalonId,
+      day_of_week: Number(day),
+      opening_time: values.is_closed ? null : values.opening_time || null,
+      closing_time: values.is_closed ? null : values.closing_time || null,
+      is_closed: Boolean(values.is_closed),
+    }))
+    const invalidDay = payload.find((day) => !day.is_closed && (!day.opening_time || !day.closing_time || day.closing_time <= day.opening_time))
+    if (invalidDay) {
+      setMessage('Enter valid opening and closing times for every active day.')
+      return
+    }
+    const { error } = await supabase.from('salon_hours').upsert(payload, { onConflict: 'salon_id,day_of_week' })
+    if (error) setMessage(error.message)
+    else {
+      setMessage('Business hours saved.')
+      queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })
+    }
+  }
+
+  const toggleEmergencyClosure = async () => {
+    const isPaused = salonStatusQuery.data?.status === 'PAUSED'
+    const { error } = await supabase.from('salons').update({ status: isPaused ? 'ACTIVE' : 'PAUSED' }).eq('id', selectedSalonId)
+    if (error) setMessage(error.message)
+    else {
+      setMessage(isPaused ? 'Salon reopened.' : 'Salon closed for emergency.')
+      salonStatusQuery.refetch()
+    }
   }
 
   const renderForm = () => {
@@ -1240,7 +1414,10 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
       </div>
     }
     if (section === 'Waiting Time Settings') {
-      return <input type="number" min="1" value={form.average_service_minutes || ''} onChange={(event) => updateForm('average_service_minutes', event.target.value)} placeholder="Average service minutes" className="rounded-xl border p-3 text-sm" />
+      return <div className="grid gap-3 md:grid-cols-[1fr_1fr]">
+        <input value={form.name || ''} readOnly placeholder="Service name" className="rounded-xl border border-slate-200 bg-slate-100 p-3 text-sm" />
+        <input type="number" min="0" value={form.buffer_minutes ?? ''} onChange={(event) => updateForm('buffer_minutes', event.target.value)} placeholder="Average waiting time (minutes)" className="rounded-xl border p-3 text-sm" />
+      </div>
     }
     return null
   }
@@ -1280,12 +1457,80 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
   }
   if (section === 'Settings') return <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">Global admin settings are managed securely by the platform configuration.</p>
   if (section === 'Dashboard') return null
+  if (section === 'Business Hours') {
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+    const savedHours = Object.fromEntries((query.data || []).map((row) => [row.day_of_week, row]))
+    const businessHours = form.businessHours || Object.fromEntries(days.map((_, day) => {
+      const saved = savedHours[day]
+      return [day, {
+        opening_time: saved?.opening_time || '09:00',
+        closing_time: saved?.closing_time || '18:00',
+        is_closed: saved?.is_closed ?? true,
+      }]
+    }))
+    return <section className="space-y-5">
+      <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-slate-700">Business hours</p>
+            <p className="mt-1 text-xs text-slate-500">Select active days and set opening and closing times.</p>
+          </div>
+          <button type="button" onClick={toggleEmergencyClosure} className={`rounded-full px-4 py-2 text-sm font-semibold ${salonStatusQuery.data?.status === 'PAUSED' ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white'}`}>
+            {salonStatusQuery.data?.status === 'PAUSED' ? 'Reopen salon' : 'Close salon'}
+          </button>
+        </div>
+      </div>
+      <form onSubmit={saveBusinessHours} className="space-y-3">
+        {days.map((day, dayIndex) => {
+          const values = businessHours[dayIndex]
+          return <div key={day} className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:grid-cols-[1.2fr_1fr_1fr] sm:items-center">
+            <label className="flex items-center gap-3 text-sm font-semibold text-slate-700">
+              <input
+                type="checkbox"
+                checked={!values.is_closed}
+                onChange={(event) => setForm((current) => ({ ...current, businessHours: { ...(current.businessHours || businessHours), [dayIndex]: { ...values, is_closed: !event.target.checked } } }))}
+                className="h-5 w-5 accent-violet-600"
+              />
+              {day}
+              <span className="text-xs font-normal text-slate-400">{values.is_closed ? 'Closed' : 'Active'}</span>
+            </label>
+            <input type="time" value={values.opening_time} disabled={values.is_closed} onChange={(event) => setForm((current) => ({ ...current, businessHours: { ...(current.businessHours || businessHours), [dayIndex]: { ...values, opening_time: event.target.value } } }))} className="rounded-xl border border-slate-200 p-3 text-sm disabled:bg-slate-100" aria-label={`${day} opening time`} />
+            <input type="time" value={values.closing_time} disabled={values.is_closed} onChange={(event) => setForm((current) => ({ ...current, businessHours: { ...(current.businessHours || businessHours), [dayIndex]: { ...values, closing_time: event.target.value } } }))} className="rounded-xl border border-slate-200 p-3 text-sm disabled:bg-slate-100" aria-label={`${day} closing time`} />
+          </div>
+        })}
+        <div className="flex justify-end"><PrimaryButton type="submit">Save business hours</PrimaryButton></div>
+      </form>
+      {message && <p className="rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-700">{message}</p>}
+    </section>
+  }
 
   return <section className="space-y-5">
     <div className="flex flex-col gap-3 rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-      <p className="text-sm font-semibold text-slate-700">Managing the connected salon</p>
-      {!['Appointments', 'Notifications'].includes(section) && <form onSubmit={save} className="flex flex-1 flex-col gap-3 sm:flex-row sm:justify-end">{renderForm()}<PrimaryButton type="submit">{form.id ? 'Update' : 'Save'}</PrimaryButton></form>}
+      <div>
+        <p className="text-sm font-semibold text-slate-700">Managing the connected salon</p>
+        {section === 'Services & Pricing' && <p className="mt-1 text-xs text-slate-500">Live services and prices shown to customers.</p>}
+      </div>
+      {section === 'Services & Pricing' ? (
+        <button
+          type="button"
+          onClick={() => {
+            setForm({})
+            setServiceFormOpen((open) => !open)
+          }}
+          className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
+        >
+          {serviceFormOpen ? 'Cancel' : 'Add new service'}
+        </button>
+      ) : !['Appointments', 'Notifications'].includes(section) ? (
+        <form onSubmit={save} className="flex flex-1 flex-col gap-3 sm:flex-row sm:justify-end">{renderForm()}<PrimaryButton type="submit">{form.id ? 'Update' : 'Save'}</PrimaryButton></form>
+      ) : null}
     </div>
+    {section === 'Services & Pricing' && serviceFormOpen && (
+      <form onSubmit={save} className="rounded-[28px] border border-violet-100 bg-violet-50/50 p-5">
+        <div className="grid gap-3 md:grid-cols-2">{renderForm()}</div>
+        <div className="mt-3 flex justify-end"><PrimaryButton type="submit">{form.id ? 'Save changes' : 'Add service'}</PrimaryButton></div>
+      </form>
+    )}
     {message && <p className="rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-700">{message}</p>}
     {query.isLoading && <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">Loading...</p>}
     {query.isError && <p className="rounded-2xl bg-rose-50 p-4 text-sm text-rose-600">{query.error.message}</p>}
@@ -1296,17 +1541,19 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
           <div>
             <p className="font-semibold">{row.name || row.employee_name || row.setting_key || row.booking_number || row.title || 'Record'}</p>
             <p className="text-sm text-slate-500">
-              {section === 'Services & Pricing' && `₹${(row.price_paise / 100).toLocaleString('en-IN')} • ${row.duration_minutes} min`}
+              {section === 'Services & Pricing' && `₹${(row.price_paise / 100).toLocaleString('en-IN')} • ${row.duration_minutes} min • ${row.buffer_minutes || 0} min waiting`}
               {section === 'Staff Management' && `${row.phone || 'No phone'} • ${row.status}`}
               {section === 'Business Hours' && `${row.opening_time || '--'} - ${row.closing_time || '--'} • ${row.is_closed ? 'Closed' : 'Open'}`}
-              {section === 'Waiting Time Settings' && `${row.setting_value?.minutes || '--'} minutes`}
+              {section === 'Waiting Time Settings' && `${row.buffer_minutes || 0} minutes average waiting time`}
               {section === 'Appointments' && `${row.status} • ${new Date(row.scheduled_start).toLocaleString()}`}
               {section === 'Notifications' && row.message}
             </p>
           </div>
           <div className="flex gap-2">
-            {['Services & Pricing', 'Staff Management', 'Business Hours', 'Waiting Time Settings'].includes(section) && <button type="button" onClick={() => edit(row)} className="rounded-full border px-3 py-2 text-xs font-semibold">Edit</button>}
-            {(section === 'Services & Pricing' || section === 'Staff Management' || section === 'Appointments') && <select value={row.status || (row.is_active ? 'ACTIVE' : 'INACTIVE')} onChange={(event) => section === 'Services & Pricing' ? supabase.from(table).update({ is_active: event.target.value === 'ACTIVE' }).eq('id', row.id).then(() => queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })) : updateStatus(row, event.target.value)} className="rounded-full border px-3 py-2 text-xs"><option value="PENDING">Pending</option><option value="WAITING">Waiting</option><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option><option value="ON_LEAVE">On leave</option><option value="CONFIRMED">Confirmed</option><option value="IN_PROGRESS">In progress</option><option value="COMPLETED">Completed</option><option value="CANCELLED">Cancelled</option><option value="NO_SHOW">No show</option></select>}
+            {section === 'Services & Pricing' && <button type="button" onClick={() => edit(row)} className="rounded-full border px-3 py-2 text-xs font-semibold">Change pricing</button>}
+            {['Staff Management', 'Business Hours', 'Waiting Time Settings'].includes(section) && <button type="button" onClick={() => edit(row)} className="rounded-full border px-3 py-2 text-xs font-semibold">{section === 'Waiting Time Settings' ? 'Set waiting time' : 'Edit'}</button>}
+            {section === 'Services & Pricing' && <button type="button" onClick={() => toggleService(row)} className={`rounded-full px-3 py-2 text-xs font-semibold ${row.is_active ? 'border border-rose-200 text-rose-700' : 'border border-emerald-200 text-emerald-700'}`}>{row.is_active ? 'Close service' : 'Open service'}</button>}
+            {((section === 'Staff Management' || section === 'Appointments') && <select value={row.status} onChange={(event) => updateStatus(row, event.target.value)} className="rounded-full border px-3 py-2 text-xs"><option value="PENDING">Pending</option><option value="WAITING">Waiting</option><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option><option value="ON_LEAVE">On leave</option><option value="CONFIRMED">Confirmed</option><option value="IN_PROGRESS">In progress</option><option value="COMPLETED">Completed</option><option value="CANCELLED">Cancelled</option><option value="NO_SHOW">No show</option></select>)}
             {section === 'Notifications' && !row.is_read && <button type="button" onClick={async () => { const { error } = await supabase.from('notifications').update({ is_read: true, read_at: new Date().toISOString() }).eq('id', row.id); if (error) setMessage(error.message); else queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] }) }} className="rounded-full border px-3 py-2 text-xs font-semibold">Mark read</button>}
           </div>
         </div>
@@ -1451,7 +1698,8 @@ function AdminDashboard({ onLogout }) {
   )
 }
 
-function AuthPage({ mode, setMode, onLogin, onRegister }) {
+function AuthPage({ initialMode, onLogin, onRegister }) {
+  const [mode, setMode] = useState(initialMode)
   const [fullName, setFullName] = useState('')
   const [phoneDigits, setPhoneDigits] = useState('')
   const [password, setPassword] = useState('')
@@ -1622,17 +1870,39 @@ function AuthPage({ mode, setMode, onLogin, onRegister }) {
 
 function CustomerApp({ user, onLogout }) {
   const [userBookings, setUserBookings] = useState([])
+  const [profile, setProfile] = useState(user)
+
+  useEffect(() => {
+    let active = true
+    const loadProfile = async () => {
+      if (!isSupabaseConfigured) return
+      const { data: authData } = await supabase.auth.getUser()
+      if (!authData.user) return
+      const { data } = await supabase
+        .from('profiles')
+        .select('full_name, phone')
+        .eq('id', authData.user.id)
+        .maybeSingle()
+      if (active && data) {
+        setProfile((current) => ({ ...current, fullName: data.full_name || current.fullName, phone: data.phone || current.phone }))
+      }
+    }
+    loadProfile()
+    return () => {
+      active = false
+    }
+  }, [])
 
   return (
     <div className="min-h-screen bg-[#f5f7fb] text-slate-900">
-      <AppHeader title="BOOKSALOON" subtitle="Premium salon booking" userName={user.fullName} onLogout={onLogout} />
+      <AppHeader title="BOOKSALOON" subtitle="Premium salon booking" userName={profile.fullName} onLogout={onLogout} />
       <main className="mx-auto max-w-6xl px-4 py-5 sm:px-6 lg:px-8">
         <Routes>
           <Route index element={<Navigate to="home" replace />} />
-          <Route path="home" element={<HomePage userName={user.fullName} userBookings={userBookings} onBookingCreated={(booking) => setUserBookings([booking])} />} />
+          <Route path="home" element={<HomePage userName={profile.fullName} userId={profile.id} userBookings={userBookings} onBookingCreated={(booking) => setUserBookings([booking])} />} />
           <Route path="bookings" element={<BookingsPage userBookings={userBookings} />} />
-          <Route path="notifications" element={<NotificationsPage />} />
-          <Route path="profile" element={<ProfilePage user={user} />} />
+          <Route path="notifications" element={<NotificationsPage userId={profile.id} />} />
+          <Route path="profile" element={<ProfilePage user={profile} />} />
           <Route path="salon/:salonId" element={<SalonDetailPage />} />
         </Routes>
       </main>
@@ -1642,10 +1912,42 @@ function CustomerApp({ user, onLogout }) {
 }
 
 function App() {
-  const [mode, setMode] = useState('login')
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false)
   const [currentUser, setCurrentUser] = useState({ ...customerProfile, fullName: 'Aarav Sharma' })
+  const [authLoading, setAuthLoading] = useState(true)
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setAuthLoading(false)
+      return undefined
+    }
+
+    let active = true
+    const restoreCustomerSession = async () => {
+      const { data, error } = await supabase.auth.getSession()
+      if (error) {
+        setAuthLoading(false)
+        return
+      }
+      const user = data.session?.user
+      if (active && user?.email?.startsWith('phone-')) {
+        setCurrentUser((previous) => ({
+          ...previous,
+          id: user.id,
+          phone: user.user_metadata?.phone || previous.phone,
+          fullName: user.user_metadata?.full_name || previous.fullName,
+        }))
+        setIsAuthenticated(true)
+      }
+      if (active) setAuthLoading(false)
+    }
+
+    restoreCustomerSession()
+    return () => {
+      active = false
+    }
+  }, [])
 
   const onLogin = async ({ phone, password }) => {
     validateIndianPhone(phone.replace(/^\+91/, ''))
@@ -1655,16 +1957,27 @@ function App() {
     }
 
     if (isSupabaseConfigured) {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email: getAuthEmail(phone),
         password,
       })
       if (error) {
         throw new Error(error.message)
       }
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('id, full_name, phone')
+        .eq('id', data.user.id)
+        .maybeSingle()
+      setCurrentUser((previous) => ({
+        ...previous,
+        id: data.user.id,
+        phone: profile?.phone || phone,
+        fullName: profile?.full_name || data.user.user_metadata?.full_name || 'Customer',
+      }))
+    } else {
+      setCurrentUser((previous) => ({ ...previous, phone, fullName: previous.fullName || 'Customer' }))
     }
-
-    setCurrentUser((previous) => ({ ...previous, phone, fullName: previous.fullName || 'Customer' }))
     setIsAuthenticated(true)
     return { success: true }
   }
@@ -1681,7 +1994,7 @@ function App() {
     }
 
     if (isSupabaseConfigured) {
-      const { error } = await supabase.auth.signUp({
+      const { data, error } = await supabase.auth.signUp({
         email: getAuthEmail(phone),
         password,
         options: {
@@ -1691,15 +2004,19 @@ function App() {
       if (error) {
         throw new Error(error.message)
       }
+      setCurrentUser((previous) => ({ ...previous, id: data.user?.id, fullName, phone }))
+    } else {
+      setCurrentUser((previous) => ({ ...previous, fullName, phone }))
     }
-
-    setCurrentUser((previous) => ({ ...previous, fullName, phone }))
     setIsAuthenticated(true)
     return { success: true }
   }
 
   const onLogout = () => {
     setIsAuthenticated(false)
+    if (isSupabaseConfigured) {
+      supabase.auth.signOut()
+    }
   }
 
   const onAdminLogin = async ({ phone, password }) => {
@@ -1732,16 +2049,18 @@ function App() {
 
   return (
     <BrowserRouter>
+      {authLoading ? <LoadingScreen /> : (
       <Routes>
         <Route path="/" element={isAuthenticated ? <Navigate to="/customer/home" replace /> : <LandingPage />} />
-        <Route path="/login" element={<AuthPage mode={mode} setMode={setMode} onLogin={onLogin} onRegister={onRegister} />} />
-        <Route path="/register" element={<AuthPage mode="register" setMode={setMode} onLogin={onLogin} onRegister={onRegister} />} />
+        <Route path="/login" element={<AuthPage initialMode="login" onLogin={onLogin} onRegister={onRegister} />} />
+        <Route path="/register" element={<AuthPage initialMode="register" onLogin={onLogin} onRegister={onRegister} />} />
         <Route path="/customer/*" element={isAuthenticated ? <CustomerApp user={currentUser} onLogout={onLogout} /> : <Navigate to="/login" replace />} />
         <Route path="/admin" element={<Navigate to={isAdminAuthenticated ? '/admin/dashboard' : '/admin/login'} replace />} />
         <Route path="/admin/login" element={<AdminLogin onLogin={onAdminLogin} />} />
         <Route path="/admin/dashboard" element={isAdminAuthenticated ? <AdminDashboard onLogout={onAdminLogout} /> : <Navigate to="/admin/login" replace />} />
         <Route path="*" element={<Navigate to={isAuthenticated ? '/customer/home' : '/login'} replace />} />
       </Routes>
+      )}
     </BrowserRouter>
   )
 }

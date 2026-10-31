@@ -25,6 +25,7 @@ Recommended order:
 9. 009_tenant_integrity_hardening.sql
 10. 010_admin_sessions.sql
 11. 011_queue_arrival_policy.sql
+12. 012_auto_assign_bookings.sql
 
 ## Admin foundation
 Migration 010 adds a server-side `admin_sessions` table and security-definer RPCs

@@ -5,8 +5,8 @@ const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'demo-anon-key'
 
 export const supabase = createClient(url, anonKey, {
   auth: {
-    persistSession: false,
-    autoRefreshToken: false,
+    persistSession: true,
+    autoRefreshToken: true,
   },
 })
 
