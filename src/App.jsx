@@ -39,6 +39,7 @@ import {
 import { customerProfile, offers, salons, serviceCatalog } from './data/mockData'
 import { issueAdminSession, revokeAdminSession, validateAdminSession } from './lib/adminService'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
+import { initializeAndroidNotifications, publishQueueNotification, requestAndroidNotificationPermission } from './services/platformNotificationAdapter'
 import FrontendLandingPage from '../frontend/src/components/LandingPage'
 import LiveQueueTracker from './components/queue/LiveQueueTracker'
 
@@ -61,6 +62,12 @@ function validateIndianPhone(phoneDigits) {
   if (!INDIAN_PHONE_PATTERN.test(phoneDigits)) {
     throw new Error('Enter a valid 10-digit Indian mobile number starting with 6, 7, 8 or 9.')
   }
+}
+
+function getErrorMessage(error, fallback = 'Something went wrong. Please try again.') {
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error?.message === 'string' && error.message) return error.message
+  return fallback
 }
 
 function getIndiaGreeting() {
@@ -791,7 +798,7 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
       return
     }
     const result = data?.[0]
-    onBookingCreated({
+    const booking = {
       id: result.booking_id,
       bookingId: result.booking_id,
       service: selectedServices.map((service) => service.name).join(', '),
@@ -801,7 +808,16 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
       date: new Date(result.estimated_start_at).toLocaleDateString('en-IN'),
       status: result.booking_status === 'CONFIRMED' ? 'Confirmed' : 'Waiting',
       estimatedWait: result.estimated_wait_minutes,
-    })
+    }
+    onBookingCreated(booking)
+    if (result.booking_status === 'WAITING') {
+      await publishQueueNotification({
+        title: 'The Saloon waiting time',
+        body: `${result.estimated_wait_minutes ?? 0} minutes estimated wait. Tap to track your queue.`,
+        bookingId: result.booking_id,
+        progress: 0,
+      })
+    }
     setIsBookingOpen(false)
     setSelectedServices([])
     setIsPriority(false)
@@ -1256,21 +1272,21 @@ function AdminLogin({ onLogin }) {
       await onLogin({ phone: formatIndianPhone(phoneDigits), password })
       navigate('/admin/dashboard', { replace: true })
     } catch (error) {
-      setMessage(error.message)
+      setMessage(getErrorMessage(error, 'Unable to complete login. Please check your details and try again.'))
     } finally {
       setSubmitting(false)
     }
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,#f5f3ff_0%,#eef2ff_30%,#f8fafc_100%)] p-5">
-      <div className="w-full max-w-md rounded-[32px] border border-slate-200 bg-white/90 p-6 shadow-[0_30px_80px_rgba(99,102,241,0.15)] backdrop-blur-sm">
+    <div className="flex min-h-[100dvh] items-start justify-center overflow-y-auto bg-[radial-gradient(circle_at_top,#f5f3ff_0%,#eef2ff_30%,#f8fafc_100%)] p-3 sm:items-center sm:p-5">
+      <div className="my-2 w-full max-w-md rounded-[32px] border border-slate-200 bg-white/90 p-4 shadow-[0_30px_80px_rgba(99,102,241,0.15)] backdrop-blur-sm sm:my-0 sm:p-6">
         <div className="mb-6 text-center">
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-gradient-to-br from-violet-600 via-indigo-500 to-fuchsia-500 text-white shadow-[0_18px_40px_rgba(124,58,237,0.35)]">
             <Scissors size={28} />
           </div>
           <p className="mt-4 text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">Premium salon booking</p>
-          <h1 className="mt-2 text-4xl font-black tracking-[-0.09em] text-slate-900">BOOKSALOON</h1>
+          <h1 className="mt-2 text-3xl font-black tracking-[-0.09em] text-slate-900 sm:text-4xl">BOOKSALOON</h1>
           {location.state?.reason && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-700">{location.state.reason}</p>}
         </div>
 
@@ -1804,7 +1820,8 @@ function WalkInModal({ salonId, services, employees, onClose, onCreated }) {
 
 function AdminDashboard({ onLogout }) {
   const [checkingSession, setCheckingSession] = useState(true)
-  const [activeSection, setActiveSection] = useState('Dashboard')
+  const [activeSection, setActiveSection] = useState('Handle Offline')
+  const [menuOpen, setMenuOpen] = useState(false)
   const [selectedSalonId, setSelectedSalonId] = useState('')
   const navigate = useNavigate()
   const salonsQuery = useQuery({
@@ -1867,23 +1884,51 @@ function AdminDashboard({ onLogout }) {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 md:flex">
-      <aside className="w-full bg-[#0b1220] p-5 text-white md:min-h-screen md:w-64 md:shrink-0">
-        <p className="text-lg font-black tracking-[-0.06em]">BOOKSALOON</p>
-        <p className="mt-1 text-[10px] uppercase tracking-[0.18em] text-slate-400">Admin workspace</p>
-        <nav className="mt-8 grid gap-2 text-sm">
-          {['Dashboard', 'Salon Floor', 'Services & Pricing', 'Staff Management', 'Business Hours', 'Waiting Time Settings', 'Appointments', 'Notifications', 'Settings'].map((item) => (
-            <button key={item} type="button" onClick={() => setActiveSection(item)} className={`rounded-xl px-3 py-2.5 text-left ${activeSection === item ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white'}`}>
-              {item}
+    <div className="min-h-screen bg-slate-100 text-slate-900">
+      <header className="sticky top-0 z-40 border-b border-white/10 bg-[#0b1220] px-4 py-4 text-white shadow-lg sm:px-6">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
+          <div>
+            <p className="text-lg font-black tracking-[-0.06em]">BOOKSALOON</p>
+            <p className="mt-1 text-[10px] uppercase tracking-[0.18em] text-slate-400">Admin workspace</p>
+          </div>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setMenuOpen((open) => !open)}
+              aria-expanded={menuOpen}
+              aria-haspopup="menu"
+              className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/15"
+            >
+              <Menu size={17} /> Menu
             </button>
-          ))}
-        </nav>
-        <button type="button" onClick={onLogout} className="mt-8 inline-flex items-center gap-2 text-sm text-slate-400 hover:text-white">
-          <LogOut size={15} /> Logout
-        </button>
-      </aside>
+            {menuOpen && (
+              <nav
+                aria-label="Admin menu"
+                className="absolute right-0 mt-3 grid w-64 gap-1 rounded-2xl border border-slate-200 bg-white p-2 text-sm text-slate-700 shadow-2xl"
+              >
+                {['Dashboard', 'Handle Offline', 'Services & Pricing', 'Staff Management', 'Business Hours', 'Waiting Time Settings', 'Appointments', 'Notifications', 'Settings'].map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    onClick={() => {
+                      setActiveSection(item)
+                      setMenuOpen(false)
+                    }}
+                    className={`rounded-xl px-3 py-2.5 text-left transition ${activeSection === item ? 'bg-slate-900 font-semibold text-white' : 'hover:bg-slate-100'}`}
+                  >
+                    {item}
+                  </button>
+                ))}
+                <button type="button" onClick={onLogout} className="mt-1 inline-flex items-center gap-2 rounded-xl border-t border-slate-200 px-3 py-3 text-left text-slate-500 hover:bg-slate-100">
+                  <LogOut size={15} /> Logout
+                </button>
+              </nav>
+            )}
+          </div>
+        </div>
+      </header>
 
-      <main className="min-w-0 flex-1 p-5 sm:p-8">
+      <main className="min-w-0 p-5 sm:p-8">
         <div className="mx-auto max-w-6xl">
           <header className="mb-6 flex flex-col gap-4 rounded-[26px] border border-slate-200 bg-white p-5 shadow-[0_20px_40px_rgba(15,23,42,0.04)] md:flex-row md:items-center md:justify-between">
           <div>
@@ -1893,7 +1938,7 @@ function AdminDashboard({ onLogout }) {
           <PrimaryButton onClick={() => navigate('/customer/home')}>Go to customer app</PrimaryButton>
         </header>
 
-        {activeSection === 'Salon Floor' ? (
+        {activeSection === 'Handle Offline' ? (
           <SalonFloor salonId={selectedSalonId} />
         ) : activeSection === 'Dashboard' ? (
           <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_40px_rgba(15,23,42,0.04)]">
@@ -1985,7 +2030,7 @@ function AuthPage({ initialMode, onLogin, onRegister }) {
 
       setMessage('Authentication failed. Please try again.')
     } catch (error) {
-      setMessage(error.message)
+      setMessage(getErrorMessage(error, 'Unable to complete authentication. Please try again.'))
     } finally {
       setSubmitting(false)
     }
@@ -2000,26 +2045,26 @@ function AuthPage({ initialMode, onLogin, onRegister }) {
             aria-label="Go to the BOOKSALOON landing page"
             className="mx-auto block w-fit rounded-3xl"
           >
-            <div className="flex h-16 w-16 items-center justify-center rounded-3xl bg-gradient-to-br from-violet-600 via-indigo-500 to-fuchsia-500 text-white shadow-[0_18px_40px_rgba(124,58,237,0.35)]">
-              <Scissors size={28} />
+            <div className="flex h-14 w-14 items-center justify-center rounded-3xl bg-gradient-to-br from-violet-600 via-indigo-500 to-fuchsia-500 text-white shadow-[0_18px_40px_rgba(124,58,237,0.35)] sm:h-16 sm:w-16">
+              <Scissors size={26} />
             </div>
             <p className="mt-4 text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">Premium salon booking</p>
             <h1 className="mt-2 text-4xl font-black tracking-[-0.09em] text-slate-900">BOOKSALOON</h1>
           </Link>
         </div>
 
-        <div className="mb-5 flex rounded-full bg-slate-100 p-1">
+        <div className="mb-5 grid grid-cols-2 rounded-full bg-slate-100 p-1">
           <button
             type="button"
             onClick={() => setMode('login')}
-            className={`flex-1 rounded-full px-4 py-2.5 text-sm font-semibold transition ${mode === 'login' ? 'bg-white text-slate-900 shadow' : 'text-slate-500'}`}
+            className={`min-w-0 rounded-full px-3 py-2.5 text-sm font-semibold transition ${mode === 'login' ? 'bg-white text-slate-900 shadow' : 'text-slate-500'}`}
           >
             Login
           </button>
           <button
             type="button"
             onClick={() => setMode('register')}
-            className={`flex-1 rounded-full px-4 py-2.5 text-sm font-semibold transition ${mode === 'register' ? 'bg-white text-slate-900 shadow' : 'text-slate-500'}`}
+            className={`min-w-0 rounded-full px-3 py-2.5 text-sm font-semibold transition ${mode === 'register' ? 'bg-white text-slate-900 shadow' : 'text-slate-500'}`}
           >
             Register
           </button>
@@ -2118,50 +2163,62 @@ function CustomerApp({ user, onLogout }) {
     let active = true
     const loadProfile = async () => {
       if (!isSupabaseConfigured) return
-      const { data: authData, error: authError } = await supabase.auth.getUser()
-      if (authError || !authData.user) {
-        if (authError) console.error('Unable to restore customer session:', authError)
-        return
-      }
-      const { data: profileData, error: profileError } = await supabase
-        .from('profiles')
-        .select('full_name, phone, created_at')
-        .eq('id', authData.user.id)
-        .maybeSingle()
-      const { data: bookingData, error: bookingError } = await supabase
-        .from('bookings')
-        .select('id, booking_number, status, scheduled_start, total_paise, salon:salons(name), booking_items(service_name_snapshot), booking_staff(employee:employees(employee_name))')
-        .eq('customer_id', authData.user.id)
-        .order('created_at', { ascending: false })
-      if (profileError) console.error('Unable to load customer profile:', profileError)
-      if (bookingError) console.error('Unable to load customer bookings:', bookingError)
-      if (active && profileData) {
-        setProfile((current) => ({
-          ...current,
-          fullName: profileData.full_name || current.fullName,
-          phone: profileData.phone || current.phone,
-          memberSince: profileData.created_at
-            ? new Date(profileData.created_at).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })
-            : current.memberSince,
-        }))
-      }
-      if (active && bookingData) {
-        setUserBookings(bookingData.map((booking) => ({
-          id: booking.booking_number || booking.id,
-          bookingId: booking.id,
-          service: booking.booking_items?.map((item) => item.service_name_snapshot).join(', ') || 'Salon appointment',
-          salon: booking.salon?.name || 'BOOKSALOON',
-          amount: `₹${((booking.total_paise || 0) / 100).toLocaleString('en-IN')}`,
-          barber: booking.booking_staff?.[0]?.employee?.employee_name || 'To be assigned',
-          date: new Date(booking.scheduled_start).toLocaleDateString('en-IN'),
-          status: booking.status === 'CONFIRMED' ? 'Confirmed' : booking.status === 'WAITING' ? 'Waiting' : booking.status,
-        })))
+      try {
+        const { data: authData, error: authError } = await supabase.auth.getUser()
+        if (authError || !authData.user) {
+          if (authError) console.error('Unable to restore customer session:', authError)
+          return
+        }
+        const { data: profileData, error: profileError } = await supabase
+          .from('profiles')
+          .select('full_name, phone, created_at')
+          .eq('id', authData.user.id)
+          .maybeSingle()
+        const { data: bookingData, error: bookingError } = await supabase
+          .from('bookings')
+          .select('id, booking_number, status, scheduled_start, total_paise, salon:salons(name), booking_items(service_name_snapshot), booking_staff(employee:employees(employee_name))')
+          .eq('customer_id', authData.user.id)
+          .order('created_at', { ascending: false })
+        if (profileError) console.error('Unable to load customer profile:', profileError)
+        if (bookingError) console.error('Unable to load customer bookings:', bookingError)
+        if (active && profileData) {
+          setProfile((current) => ({
+            ...current,
+            fullName: profileData.full_name || current.fullName,
+            phone: profileData.phone || current.phone,
+            memberSince: profileData.created_at
+              ? new Date(profileData.created_at).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })
+              : current.memberSince,
+          }))
+        }
+        if (active && Array.isArray(bookingData)) {
+          setUserBookings(bookingData.map((booking) => ({
+            id: booking.booking_number || booking.id,
+            bookingId: booking.id,
+            service: Array.isArray(booking.booking_items)
+              ? booking.booking_items.map((item) => item.service_name_snapshot).join(', ') || 'Salon appointment'
+              : 'Salon appointment',
+            salon: booking.salon?.name || 'BOOKSALOON',
+            amount: `₹${((booking.total_paise || 0) / 100).toLocaleString('en-IN')}`,
+            barber: booking.booking_staff?.[0]?.employee?.employee_name || 'To be assigned',
+            date: booking.scheduled_start ? new Date(booking.scheduled_start).toLocaleDateString('en-IN') : 'Date to be confirmed',
+            status: booking.status === 'CONFIRMED' ? 'Confirmed' : booking.status === 'WAITING' ? 'Waiting' : booking.status,
+          })))
+        }
+      } catch (loadError) {
+        console.error('Unable to load customer data:', loadError)
       }
     }
     loadProfile()
     return () => {
       active = false
     }
+  }, [])
+
+  useEffect(() => {
+    initializeAndroidNotifications().catch((error) => {
+      console.error('Unable to enable Android notifications:', error)
+    })
   }, [])
 
   return (
@@ -2188,6 +2245,12 @@ function App() {
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false)
   const [currentUser, setCurrentUser] = useState({ ...customerProfile, fullName: 'Aarav Sharma' })
   const [authLoading, setAuthLoading] = useState(true)
+
+  useEffect(() => {
+    requestAndroidNotificationPermission().catch((error) => {
+      console.error('Unable to request Android notification permission:', error)
+    })
+  }, [])
 
   useEffect(() => {
     if (!isSupabaseConfigured) {
@@ -2228,7 +2291,8 @@ function App() {
   }, [])
 
   const onLogin = async ({ phone, password }) => {
-    validateIndianPhone(phone.replace(/^\+91/, ''))
+    const normalizedPhone = phone?.replace(/^\+91/, '') || ''
+    validateIndianPhone(normalizedPhone)
 
     if (!password || password.length < 6) {
       throw new Error('Password must be at least 6 characters long.')
@@ -2240,7 +2304,10 @@ function App() {
         password,
       })
       if (error) {
-        throw new Error(error.message)
+        throw new Error(getErrorMessage(error, 'Unable to sign in. Please check your phone number and password.'))
+      }
+      if (!data?.user?.id) {
+        throw new Error('Login did not return a valid user session. Please try again.')
       }
       const { data: profile } = await supabase
         .from('profiles')
@@ -2293,7 +2360,9 @@ function App() {
   const onLogout = () => {
     setIsAuthenticated(false)
     if (isSupabaseConfigured) {
-      supabase.auth.signOut()
+      supabase.auth.signOut().catch((error) => {
+        console.error('Unable to sign out:', error)
+      })
     }
   }
 

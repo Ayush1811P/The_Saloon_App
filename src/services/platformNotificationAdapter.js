@@ -3,8 +3,20 @@ import { supabase } from '../lib/supabase'
 let androidNotificationSetup
 
 export function getNotificationPlatform() {
-  if (typeof window !== 'undefined' && window.Capacitor?.isNativePlatform?.()) return 'ANDROID'
+  try {
+    if (typeof window !== 'undefined' && window.Capacitor?.isNativePlatform?.()) return 'ANDROID'
+  } catch (error) {
+    console.error('Unable to detect notification platform:', error)
+  }
   return 'WEB'
+}
+
+export async function requestAndroidNotificationPermission() {
+  if (getNotificationPlatform() !== 'ANDROID') return { supported: false }
+  const { PushNotifications } = await import('@capacitor/push-notifications')
+  let permission = await PushNotifications.checkPermissions()
+  if (permission.receive === 'prompt') permission = await PushNotifications.requestPermissions()
+  return { supported: true, granted: permission.receive === 'granted' }
 }
 
 export async function publishQueueNotification({ title, body, bookingId, progress, max = 100 }) {
@@ -35,7 +47,8 @@ export async function publishQueueNotification({ title, body, bookingId, progres
 
 export async function registerAndroidDevice({ token, userAgent }) {
   if (!token) throw new Error('FCM token is required.')
-  const deviceId = localStorage.getItem('booksaloon-device-id') || crypto.randomUUID()
+  const deviceId = localStorage.getItem('booksaloon-device-id')
+    || (globalThis.crypto?.randomUUID?.() || `android-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   localStorage.setItem('booksaloon-device-id', deviceId)
   const { error } = await supabase.rpc('register_device_push_subscription', {
     p_device_id: deviceId,
@@ -52,7 +65,9 @@ export async function initializeAndroidNotifications() {
   if (androidNotificationSetup) return androidNotificationSetup
   androidNotificationSetup = setupAndroidNotifications()
   try {
-    return await androidNotificationSetup
+    const result = await androidNotificationSetup
+    if (!result.granted) androidNotificationSetup = undefined
+    return result
   } catch (error) {
     androidNotificationSetup = undefined
     throw error
@@ -61,9 +76,8 @@ export async function initializeAndroidNotifications() {
 
 async function setupAndroidNotifications() {
   const { PushNotifications } = await import('@capacitor/push-notifications')
-  let permission = await PushNotifications.checkPermissions()
-  if (permission.receive === 'prompt') permission = await PushNotifications.requestPermissions()
-  if (permission.receive !== 'granted') return { supported: true, granted: false }
+  const permission = await requestAndroidNotificationPermission()
+  if (!permission.granted) return permission
   const registerToken = async (token) => {
     await registerAndroidDevice({ token })
   }
