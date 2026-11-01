@@ -2349,7 +2349,10 @@ function App() {
       if (error) {
         throw new Error(error.message)
       }
-      setCurrentUser((previous) => ({ ...previous, id: data.user?.id, fullName, phone }))
+      if (!data?.user?.id) {
+        throw new Error('Account was created, but no user session is available yet. Please confirm your account and log in.')
+      }
+      setCurrentUser((previous) => ({ ...previous, id: data.user.id, fullName, phone }))
     } else {
       setCurrentUser((previous) => ({ ...previous, fullName, phone }))
     }

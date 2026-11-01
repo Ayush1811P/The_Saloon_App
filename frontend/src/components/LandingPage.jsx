@@ -102,7 +102,7 @@ function Header({ go }) {
         </nav>
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => go('/login')} className="rounded-full px-3 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Login</button>
-          <button type="button" onClick={() => go('/register')} className="hidden rounded-full bg-gold px-5 py-2.5 text-sm font-bold text-ink transition hover:bg-[#e9d2b0] sm:inline-flex">Book now</button>
+          <button type="button" onClick={() => go('/register')} className="inline-flex rounded-full bg-gold px-3 py-2 text-xs font-bold text-ink transition hover:bg-[#e9d2b0] sm:px-5 sm:py-2.5 sm:text-sm">Register</button>
           <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-controls="mobile-menu" aria-label={open ? 'Close menu' : 'Open menu'} className="grid h-10 w-10 place-items-center rounded-full border border-white/20 text-white lg:hidden">
             {open ? <X size={18} /> : <Menu size={18} />}
           </button>
