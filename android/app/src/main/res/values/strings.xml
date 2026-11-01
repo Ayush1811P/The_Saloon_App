@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">BOOKSALOON</string>
-    <string name="title_activity_main">BOOKSALOON</string>
+    <string name="app_name">The Saloon</string>
+    <string name="title_activity_main">The Saloon</string>
     <string name="package_name">com.booksaloon.app</string>
     <string name="custom_url_scheme">com.booksaloon.app</string>
 </resources>

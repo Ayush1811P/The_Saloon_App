@@ -1,5 +1,7 @@
 import { supabase } from '../lib/supabase'
 
+let androidNotificationSetup
+
 export function getNotificationPlatform() {
   if (typeof window !== 'undefined' && window.Capacitor?.isNativePlatform?.()) return 'ANDROID'
   return 'WEB'
@@ -47,10 +49,27 @@ export async function registerAndroidDevice({ token, userAgent }) {
 
 export async function initializeAndroidNotifications() {
   if (getNotificationPlatform() !== 'ANDROID') return { supported: false }
+  if (androidNotificationSetup) return androidNotificationSetup
+  androidNotificationSetup = setupAndroidNotifications()
+  try {
+    return await androidNotificationSetup
+  } catch (error) {
+    androidNotificationSetup = undefined
+    throw error
+  }
+}
+
+async function setupAndroidNotifications() {
   const { PushNotifications } = await import('@capacitor/push-notifications')
   let permission = await PushNotifications.checkPermissions()
   if (permission.receive === 'prompt') permission = await PushNotifications.requestPermissions()
   if (permission.receive !== 'granted') return { supported: true, granted: false }
+  const registerToken = async (token) => {
+    await registerAndroidDevice({ token })
+  }
+  await PushNotifications.addListener('registration', ({ value }) => {
+    registerToken(value).catch((error) => console.error('Unable to register Android device:', error))
+  })
   const registrationPromise = new Promise((resolve, reject) => {
     let settled = false
     const timeout = window.setTimeout(() => {
@@ -76,6 +95,6 @@ export async function initializeAndroidNotifications() {
   })
   await PushNotifications.register()
   const token = await registrationPromise
-  await registerAndroidDevice({ token })
+  await registerToken(token)
   return { supported: true, granted: true }
 }
