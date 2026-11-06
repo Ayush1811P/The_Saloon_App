@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Bell, WifiOff } from 'lucide-react'
 import { getLiveQueueBooking, getProgressPercent, getRemainingMinutes, subscribeToQueueBooking } from '../../services/queueTrackerService'
-import { registerWebDevice, showQueueNotification } from '../../services/notificationService'
-import { initializeAndroidNotifications, publishQueueNotification } from '../../services/platformNotificationAdapter'
+import { registerWebDevice, requestWebNotifications } from '../../services/notificationService'
+import { initializeAndroidNotifications, publishQueueNotification, requestAndroidNotificationPermission, showCurrentStatusNotification } from '../../services/platformNotificationAdapter'
 
 function statusLabel(status) {
   return { WAITING: 'Waiting in queue', CALLED: 'Your turn is next', SERVING: 'Service in progress', COMPLETED: 'Service completed', CANCELLED: 'Appointment cancelled' }[status] || status
@@ -12,6 +12,8 @@ export default function LiveQueueTracker({ bookingId, userId }) {
   const [entry, setEntry] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [notificationMessage, setNotificationMessage] = useState('')
+  const [enablingNotifications, setEnablingNotifications] = useState(false)
   const [offline, setOffline] = useState(!navigator.onLine)
   const [now, setNow] = useState(Date.now())
 
@@ -44,10 +46,71 @@ export default function LiveQueueTracker({ bookingId, userId }) {
   }, [bookingId, userId])
 
   const remaining = useMemo(() => entry ? getRemainingMinutes(entry.estimated_start_at) : null, [entry, now])
-  const progress = entry ? getProgressPercent(entry) : 0
+  const progress = entry ? getProgressPercent(entry, now) : 0
   const salon = entry?.booking?.salon
   const service = entry?.booking?.booking_items?.map((item) => item.service_name_snapshot).join(', ')
   const barber = entry?.booking?.booking_staff?.[0]?.employee?.employee_name
+
+  const enableNotifications = async () => {
+    setEnablingNotifications(true)
+    setNotificationMessage('')
+    let statusSent = false
+    const bookingStatus = entry.booking?.status
+    const currentStatus = entry.status || bookingStatus
+    const waitMinutes = remaining ?? entry.estimated_wait_minutes
+    const statusBody = currentStatus === 'CANCELLED' || bookingStatus === 'CANCELLED'
+      ? 'Your appointment has been cancelled.'
+      : currentStatus === 'CONFIRMED' || bookingStatus === 'CONFIRMED'
+        ? `Your appointment is approved${barber ? ` and assigned to ${barber}` : ''}.`
+        : currentStatus === 'WAITING' || bookingStatus === 'WAITING'
+          ? `Your appointment is in the queue. ${waitMinutes ?? 'The wait time is being calculated'}${waitMinutes != null ? ' minutes remaining.' : '.'}`
+          : statusLabel(currentStatus)
+
+    try {
+      if (window.Capacitor?.isNativePlatform?.()) {
+        const permission = await requestAndroidNotificationPermission()
+        if (!permission.supported) throw new Error('Notifications are not supported on this device.')
+        if (!permission.granted) throw new Error('Allow notifications in Android settings to continue.')
+        await showCurrentStatusNotification({ title: 'BOOKSALOON appointment status', body: statusBody, bookingId })
+        statusSent = true
+        const result = await initializeAndroidNotifications()
+        setNotificationMessage(result.supported
+          ? 'Current status notification sent. Future appointment updates are enabled.'
+          : `Current status notification sent. Future updates are unavailable: ${result.reason || 'push notifications are not configured on this app build.'}`)
+        return
+      }
+
+      const permission = await requestWebNotifications()
+      if (!permission.supported) throw new Error('This browser does not support notifications.')
+      if (!permission.granted) throw new Error('Notification permission was not granted.')
+      await showCurrentStatusNotification({ title: 'BOOKSALOON appointment status', body: statusBody, bookingId })
+      statusSent = true
+      const result = await registerWebDevice(userId)
+      setNotificationMessage(result.pushSupported
+        ? 'Current status notification sent. Future appointment updates are enabled.'
+        : 'Current status notification sent. Background push notifications are not supported in this browser.')
+    } catch (notificationError) {
+      setNotificationMessage(statusSent
+        ? `Current status notification sent, but future updates could not be enabled: ${notificationError.message || 'unknown error'}`
+        : notificationError.message || 'Unable to enable appointment notifications.')
+    } finally {
+      setEnablingNotifications(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!entry || entry.status !== 'WAITING' || !window.Capacitor?.isNativePlatform?.()) return
+    publishQueueNotification({
+      title: 'BOOKSALOON queue',
+      body: `${remaining ?? 0} minutes estimated wait`,
+      bookingId,
+      progress,
+      estimatedStartAt: entry.estimated_start_at,
+      startedAt: entry.created_at,
+    }).catch((notificationError) => {
+      console.error('Unable to update Android queue progress:', notificationError)
+    })
+  }, [bookingId, entry, progress, remaining])
 
   if (loading) return <p className="rounded-2xl bg-slate-50 p-5 text-sm text-slate-500">Loading live queue...</p>
   if (error) return <p className="rounded-2xl bg-rose-50 p-5 text-sm text-rose-700">{error}</p>
@@ -67,17 +130,8 @@ export default function LiveQueueTracker({ bookingId, userId }) {
       <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex items-center justify-between"><div><p className="text-xs uppercase tracking-wider text-slate-400">Current status</p><p className="mt-1 text-xl font-black">{statusLabel(entry.status || entry.booking?.status)}</p></div><span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-bold text-violet-700">{entry.status}</span></div>
         <div className="mt-5 grid gap-3 sm:grid-cols-2"><div><p className="text-xs text-slate-400">Assigned barber</p><p className="font-semibold">{barber || 'To be assigned'}</p></div><div><p className="text-xs text-slate-400">Last updated</p><p className="font-semibold">{new Date(entry.created_at).toLocaleString('en-IN')}</p></div></div>
-        <button type="button" onClick={async () => {
-          if (window.Capacitor?.isNativePlatform?.()) {
-            await initializeAndroidNotifications()
-            return
-          }
-          const result = await registerWebDevice(userId)
-          if (result.granted) {
-            showQueueNotification('BOOKSALOON queue updates enabled', 'You will receive meaningful queue updates.', { bookingId })
-          }
-        }} className="mt-5 inline-flex items-center gap-2 rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold"><Bell size={16} /> Enable notifications</button>
-        {window.Capacitor?.isNativePlatform?.() && entry.status === 'WAITING' && <button type="button" onClick={() => publishQueueNotification({ title: 'BOOKSALOON queue', body: `${remaining ?? 0} minutes estimated wait`, bookingId, progress })} className="ml-2 mt-5 rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold">Update Android progress</button>}
+        <button type="button" onClick={enableNotifications} disabled={enablingNotifications} className="mt-5 inline-flex items-center gap-2 rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold disabled:opacity-50"><Bell size={16} /> {enablingNotifications ? 'Enabling...' : 'Enable notifications'}</button>
+        {notificationMessage && <p role="status" className="mt-3 text-sm text-slate-600">{notificationMessage}</p>}
       </div>
     </section>
   )

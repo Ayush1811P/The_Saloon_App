@@ -35,8 +35,14 @@ export function getRemainingMinutes(estimatedStartAt) {
   return Math.max(0, Math.ceil((new Date(estimatedStartAt).getTime() - Date.now()) / 60000))
 }
 
-export function getProgressPercent(entry) {
-  const wait = Number(entry?.estimated_wait_minutes)
-  if (!Number.isFinite(wait) || wait <= 0 || !entry?.estimated_start_at) return wait === 0 ? 100 : 0
-  return Math.min(100, Math.max(0, ((wait - getRemainingMinutes(entry.estimated_start_at)) / wait) * 100))
+export function getProgressPercent(entry, now = Date.now()) {
+  if (!entry?.estimated_start_at) return Number(entry?.estimated_wait_minutes) === 0 ? 100 : 0
+  const endAt = new Date(entry.estimated_start_at).getTime()
+  const startedAt = entry.created_at
+    ? new Date(entry.created_at).getTime()
+    : endAt - Number(entry.estimated_wait_minutes || 0) * 60000
+  const duration = endAt - startedAt
+  if (!Number.isFinite(duration)) return 0
+  if (duration <= 0) return now >= endAt ? 100 : 0
+  return Math.min(100, Math.max(0, ((now - startedAt) / duration) * 100))
 }

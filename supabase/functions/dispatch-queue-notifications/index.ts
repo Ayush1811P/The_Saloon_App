@@ -72,6 +72,14 @@ function messageFor(event: EventRow) {
   if (!EVENT_TYPES.has(event.event_type)) throw new Error('Unsupported notification event')
   const queueNumber = event.payload.queueNumber
   const wait = event.payload.estimatedWaitMinutes
+  const estimatedStartAt = event.payload.estimatedStartAt
+  const queueStartedAt = event.payload.queueStartedAt
+  const estimatedStartAtMillis = typeof estimatedStartAt === 'string' && Number.isFinite(Date.parse(estimatedStartAt))
+    ? String(Date.parse(estimatedStartAt))
+    : ''
+  const queueStartedAtMillis = typeof queueStartedAt === 'string' && Number.isFinite(Date.parse(queueStartedAt))
+    ? String(Date.parse(queueStartedAt))
+    : ''
   const service = typeof event.payload.service === 'string' ? event.payload.service : 'your salon service'
   const messages: Record<string, [string, string]> = {
     BOOKING_CONFIRMED: ['Appointment confirmed', `Your ${service} appointment is confirmed.`],
@@ -91,6 +99,8 @@ function messageFor(event: EventRow) {
     bookingId: event.booking_id,
     queueNumber: queueNumber == null ? '' : String(queueNumber),
     estimatedWaitMinutes: wait == null ? '' : String(wait),
+    estimatedStartAt: estimatedStartAtMillis,
+    startedAt: queueStartedAtMillis,
     url: `/customer/queue/${event.booking_id}`,
   }
 }

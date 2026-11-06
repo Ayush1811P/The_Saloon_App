@@ -19,7 +19,7 @@ export async function requestAndroidNotificationPermission() {
   return { supported: true, granted: permission.receive === 'granted' }
 }
 
-export async function publishQueueNotification({ title, body, bookingId, progress, max = 100 }) {
+export async function publishQueueNotification({ title, body, bookingId, progress, estimatedStartAt, startedAt, max = 100 }) {
   if (getNotificationPlatform() === 'ANDROID') {
     const plugin = window.Capacitor?.Plugins?.QueueNotification
     if (!plugin) return { platform: 'ANDROID', supported: false, reason: 'Queue notification plugin is not available' }
@@ -28,6 +28,8 @@ export async function publishQueueNotification({ title, body, bookingId, progres
       body,
       bookingId,
       progress: Math.round(Math.max(0, Math.min(max, progress)) / max * 100),
+      estimatedStartAt: estimatedStartAt ? new Date(estimatedStartAt).getTime() : 0,
+      startedAt: startedAt ? new Date(startedAt).getTime() : 0,
     })
     return { platform: 'ANDROID', supported: true }
   }
@@ -41,6 +43,29 @@ export async function publishQueueNotification({ title, body, bookingId, progres
       body,
       tag: bookingId ? `booksaloon-${bookingId}` : 'booksaloon-queue',
       data: { bookingId, progress, max, url: bookingId ? `/customer/queue/${bookingId}` : '/customer/bookings' },
+    }),
+  }
+}
+
+export async function showCurrentStatusNotification({ title, body, bookingId }) {
+  if (getNotificationPlatform() === 'ANDROID') {
+    const plugin = window.Capacitor?.Plugins?.QueueNotification
+    if (!plugin?.showStatus) {
+      return { platform: 'ANDROID', supported: false, reason: 'Status notification plugin is not available' }
+    }
+    await plugin.showStatus({ title, body, bookingId })
+    return { platform: 'ANDROID', supported: true }
+  }
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
+    return { platform: 'WEB', supported: false, reason: 'Notification permission is unavailable' }
+  }
+  return {
+    platform: 'WEB',
+    supported: true,
+    notification: new Notification(title, {
+      body,
+      tag: bookingId ? `booksaloon-${bookingId}` : 'booksaloon-queue',
+      data: { bookingId, url: bookingId ? `/customer/queue/${bookingId}` : '/customer/bookings' },
     }),
   }
 }
@@ -75,6 +100,11 @@ export async function initializeAndroidNotifications() {
 }
 
 async function setupAndroidNotifications() {
+  const plugin = window.Capacitor?.Plugins?.QueueNotification
+  const configuration = await plugin?.isConfigured?.()
+  if (!configuration?.configured) {
+    return { supported: false, reason: 'Android push notifications are not configured' }
+  }
   const { PushNotifications } = await import('@capacitor/push-notifications')
   const permission = await requestAndroidNotificationPermission()
   if (!permission.granted) return permission

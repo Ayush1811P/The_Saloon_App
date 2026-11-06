@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   Sparkles,
   Star,
+  Trash2,
   UserRound,
   Users,
   WalletCards,
@@ -56,6 +57,23 @@ function getAuthEmail(phone) {
 
 function getAdminAuthEmail(phone) {
   return `${phone.replace('+91', '')}@booksaloon.app`
+}
+
+const DEMO_ACCOUNTS_KEY = 'booksaloon-demo-accounts'
+
+async function hashPassword(password) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function getDemoAccounts() {
+  return JSON.parse(localStorage.getItem(DEMO_ACCOUNTS_KEY) || '{}')
+}
+
+function saveDemoAccount(phone, account) {
+  const accounts = getDemoAccounts()
+  accounts[phone.replace(/^\+91/, '')] = account
+  localStorage.setItem(DEMO_ACCOUNTS_KEY, JSON.stringify(accounts))
 }
 
 function validateIndianPhone(phoneDigits) {
@@ -816,6 +834,7 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
         body: `${result.estimated_wait_minutes ?? 0} minutes estimated wait. Tap to track your queue.`,
         bookingId: result.booking_id,
         progress: 0,
+        estimatedStartAt: result.estimated_start_at,
       })
     }
     setIsBookingOpen(false)
@@ -1066,9 +1085,16 @@ function ExplorePage() {
   )
 }
 
-function BookingsPage({ userBookings }) {
+function BookingsPage({ userBookings, onClearBookings }) {
   return (
     <div className="space-y-4 pb-24">
+      <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
+        <div>
+        <h2 className="text-xl font-black tracking-[-0.06em]">My Bookings</h2>
+          <p className="text-xs text-slate-500">Clearing hides this history on this device; it does not cancel appointments.</p>
+        </div>
+        {userBookings.length > 0 && <button type="button" onClick={onClearBookings} className="inline-flex items-center gap-2 rounded-full border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50"><Trash2 size={14} /> Clear bookings</button>}
+      </div>
       {userBookings.map((booking) => (
         <BookingCard key={booking.id} booking={booking} />
       ))}
@@ -1079,6 +1105,8 @@ function BookingsPage({ userBookings }) {
 
 function NotificationsPage({ userId }) {
   const [userNotifications, setUserNotifications] = useState([])
+  const [message, setMessage] = useState('')
+  const [clearing, setClearing] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -1091,7 +1119,11 @@ function NotificationsPage({ userId }) {
         .select('id, title, message, created_at, is_read')
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
-      if (error || !active) return
+      if (error) {
+        if (active) setMessage(error.message)
+        return
+      }
+      if (!active) return
       setUserNotifications(data || [])
 
       channel = supabase
@@ -1109,8 +1141,28 @@ function NotificationsPage({ userId }) {
     }
   }, [userId])
 
+  const clearNotifications = async () => {
+    setClearing(true)
+    setMessage('')
+    if (isSupabaseConfigured && userId) {
+      const { error } = await supabase.from('notifications').delete().eq('user_id', userId)
+      if (error) {
+        setMessage(error.message)
+        setClearing(false)
+        return
+      }
+    }
+    setUserNotifications([])
+    setClearing(false)
+  }
+
   return (
     <div className="space-y-4 pb-24">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-xl font-black tracking-[-0.06em]">Notifications</h2>
+        {userNotifications.length > 0 && <button type="button" onClick={clearNotifications} disabled={clearing} className="inline-flex items-center gap-2 rounded-full border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-50"><Trash2 size={14} /> {clearing ? 'Clearing...' : 'Clear notifications'}</button>}
+      </div>
+      {message && <p role="alert" className="rounded-2xl bg-rose-50 p-3 text-sm text-rose-700">{message}</p>}
       {userNotifications.map((notification) => (
         <NotificationCard
           key={notification.id}
@@ -1282,9 +1334,9 @@ function AdminLogin({ onLogin }) {
     <div className="flex min-h-[100dvh] items-start justify-center overflow-y-auto bg-[radial-gradient(circle_at_top,#f5f3ff_0%,#eef2ff_30%,#f8fafc_100%)] p-3 sm:items-center sm:p-5">
       <div className="my-2 w-full max-w-md rounded-[32px] border border-slate-200 bg-white/90 p-4 shadow-[0_30px_80px_rgba(99,102,241,0.15)] backdrop-blur-sm sm:my-0 sm:p-6">
         <div className="mb-6 text-center">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-gradient-to-br from-violet-600 via-indigo-500 to-fuchsia-500 text-white shadow-[0_18px_40px_rgba(124,58,237,0.35)]">
+          <Link to="/" aria-label="Return to the BOOKSALOON landing page" className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-gradient-to-br from-violet-600 via-indigo-500 to-fuchsia-500 text-white shadow-[0_18px_40px_rgba(124,58,237,0.35)]">
             <Scissors size={28} />
-          </div>
+          </Link>
           <p className="mt-4 text-xs font-semibold uppercase tracking-[0.22em] text-violet-600">Premium salon booking</p>
           <h1 className="mt-2 text-3xl font-black tracking-[-0.09em] text-slate-900 sm:text-4xl">BOOKSALOON</h1>
           {location.state?.reason && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-700">{location.state.reason}</p>}
@@ -1332,6 +1384,83 @@ function AdminLogin({ onLogin }) {
   )
 }
 
+function PasswordResetPage({ onRequestReset, onResetPassword }) {
+  const [phoneDigits, setPhoneDigits] = useState('')
+  const [otp, setOtp] = useState('')
+  const [demoOtp, setDemoOtp] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [step, setStep] = useState('request')
+  const [message, setMessage] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const requestOtp = async (event) => {
+    event.preventDefault()
+    setSubmitting(true)
+    setMessage('')
+    try {
+      validateIndianPhone(phoneDigits)
+      const result = await onRequestReset(formatIndianPhone(phoneDigits))
+      setDemoOtp(result.demoOtp || '')
+      setStep('reset')
+    } catch (error) {
+      setMessage(getErrorMessage(error, 'Unable to request a password reset. Please try again.'))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const resetPassword = async (event) => {
+    event.preventDefault()
+    setSubmitting(true)
+    setMessage('')
+    try {
+      if (!/^\d{4}$/.test(otp)) throw new Error('Enter the 4-digit OTP.')
+      if (demoOtp && otp !== demoOtp) throw new Error('The OTP is incorrect.')
+      if (newPassword.length < 6) throw new Error('Password must be at least 6 characters long.')
+      if (newPassword !== confirmPassword) throw new Error('Passwords do not match.')
+      await onResetPassword({ phone: formatIndianPhone(phoneDigits), otp, newPassword })
+      setMessage('Password updated. You can now log in with your new password.')
+      setStep('complete')
+    } catch (error) {
+      setMessage(getErrorMessage(error, 'Unable to reset your password. Please try again.'))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,#f5f3ff_0%,#eef2ff_30%,#f8fafc_100%)] p-5">
+      <div className="w-full max-w-md rounded-[32px] border border-slate-200 bg-white/90 p-6 shadow-[0_30px_80px_rgba(99,102,241,0.15)]">
+        <div className="mb-6 text-center">
+          <Link to="/" aria-label="Go to the BOOKSALOON landing page" className="mx-auto flex h-14 w-14 items-center justify-center rounded-3xl bg-gradient-to-br from-violet-600 via-indigo-500 to-fuchsia-500 text-white"><Scissors size={26} /></Link>
+          <h1 className="mt-4 text-2xl font-black tracking-[-0.06em] text-slate-900">Reset your password</h1>
+          <p className="mt-2 text-sm text-slate-500">{step === 'request' ? 'Enter your mobile number to get a one-time code.' : `Reset the password for +91 ${phoneDigits}.`}</p>
+        </div>
+        {step === 'request' ? (
+          <form className="space-y-4" onSubmit={requestOtp}>
+            <label className="block text-sm font-medium text-slate-700">Mobile number
+              <span className="mt-2 flex overflow-hidden rounded-2xl border border-slate-200 bg-slate-50"><span className="border-r border-slate-200 px-4 py-3 text-slate-600">+91</span><input autoComplete="tel-national" type="tel" inputMode="numeric" value={phoneDigits} maxLength={10} onChange={(event) => setPhoneDigits(event.target.value.replace(/\D/g, '').slice(0, 10))} className="min-w-0 flex-1 bg-transparent px-4 py-3 outline-none" placeholder="98765 43210" /></span>
+            </label>
+            {message && <p role="alert" className="rounded-2xl bg-rose-50 px-3 py-2 text-sm text-rose-600">{message}</p>}
+            <PrimaryButton type="submit" className="w-full" disabled={submitting}>{submitting ? 'Sending code...' : 'Send OTP'}</PrimaryButton>
+          </form>
+        ) : (
+          <form className="space-y-4" onSubmit={resetPassword}>
+            {demoOtp && <p className="rounded-2xl bg-amber-50 p-3 text-sm text-amber-800">Demo OTP: <strong className="font-mono text-lg">{demoOtp}</strong><br />Temporary test code; SMS delivery is not enabled.</p>}
+            <label className="block text-sm font-medium text-slate-700">4-digit OTP<input autoComplete="one-time-code" inputMode="numeric" value={otp} maxLength={4} onChange={(event) => setOtp(event.target.value.replace(/\D/g, '').slice(0, 4))} className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-violet-400" placeholder="Enter OTP" /></label>
+            <label className="block text-sm font-medium text-slate-700">New password<input autoComplete="new-password" type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-violet-400" placeholder="At least 6 characters" /></label>
+            <label className="block text-sm font-medium text-slate-700">Confirm new password<input autoComplete="new-password" type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-violet-400" placeholder="Repeat new password" /></label>
+            {message && <p role="status" className={`rounded-2xl px-3 py-2 text-sm ${message.startsWith('Password updated') ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-600'}`}>{message}</p>}
+            {step !== 'complete' && <PrimaryButton type="submit" className="w-full" disabled={submitting}>{submitting ? 'Updating password...' : 'Reset password'}</PrimaryButton>}
+          </form>
+        )}
+        {step === 'complete' ? <Link to="/login" className="mt-4 block text-center text-sm font-semibold text-violet-700">Back to login</Link> : <Link to="/login" className="mt-5 block text-center text-sm font-semibold text-violet-700">Back to login</Link>}
+      </div>
+    </div>
+  )
+}
+
 function AdminControls({ section, selectedSalonId, onSalonCreated }) {
   const [form, setForm] = useState({})
   const [serviceFormOpen, setServiceFormOpen] = useState(false)
@@ -1352,7 +1481,7 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
     queryFn: async () => {
       let request = supabase.from(table).select('*')
       if (table === 'notifications') {
-        request = request.eq('salon_id', selectedSalonId).order('created_at', { ascending: false })
+        request = request.eq('salon_id', selectedSalonId).eq('is_read', false).order('created_at', { ascending: false })
       } else if (table === 'salon_settings') {
         request = request.eq('salon_id', selectedSalonId).order('setting_key')
       } else if (table === 'salon_hours') {
@@ -1442,6 +1571,17 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
   }
 
   const updateStatus = async (row, status) => {
+    if (section === 'Appointments' && status === 'CONFIRMED') {
+      const { data, error } = await supabase.rpc('admin_approve_booking', { p_booking_id: row.id })
+      if (error) setMessage(error.message)
+      else {
+        setMessage(data === 'WAITING'
+          ? 'No barber is currently available. Appointment added to the waiting queue.'
+          : 'Appointment approved and assigned to an available barber.')
+        queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })
+      }
+      return
+    }
     if (section === 'Appointments' && status === 'CANCELLED') {
       const { error } = await supabase.rpc('admin_cancel_booking', { p_booking_id: row.id })
       if (error) setMessage(error.message)
@@ -1506,6 +1646,15 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
     else {
       setMessage(isPaused ? 'Salon reopened.' : 'Salon closed for emergency.')
       salonStatusQuery.refetch()
+    }
+  }
+
+  const clearNotifications = async () => {
+    const { error } = await supabase.from('notifications').delete().eq('salon_id', selectedSalonId)
+    if (error) setMessage(error.message)
+    else {
+      setMessage('Notifications cleared.')
+      queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })
     }
   }
 
@@ -1640,9 +1789,11 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
         >
           {serviceFormOpen ? 'Cancel' : 'Add new service'}
         </button>
-      ) : !['Appointments', 'Notifications'].includes(section) ? (
+      ) : section === 'Notifications' ? (
+        <button type="button" onClick={clearNotifications} className="rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700">Clear all notifications</button>
+      ) : section === 'Appointments' ? null : (
         <form onSubmit={save} className="flex flex-1 flex-col gap-3 sm:flex-row sm:justify-end">{renderForm()}<PrimaryButton type="submit">{form.id ? 'Update' : 'Save'}</PrimaryButton></form>
-      ) : null}
+      )}
     </div>
     {section === 'Services & Pricing' && serviceFormOpen && (
       <form onSubmit={save} className="rounded-[28px] border border-violet-100 bg-violet-50/50 p-5">
@@ -1673,7 +1824,7 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
             {['Staff Management', 'Business Hours', 'Waiting Time Settings'].includes(section) && <button type="button" onClick={() => edit(row)} className="rounded-full border px-3 py-2 text-xs font-semibold">{section === 'Waiting Time Settings' ? 'Set waiting time' : 'Edit'}</button>}
             {section === 'Services & Pricing' && <button type="button" onClick={() => toggleService(row)} className={`rounded-full px-3 py-2 text-xs font-semibold ${row.is_active ? 'border border-rose-200 text-rose-700' : 'border border-emerald-200 text-emerald-700'}`}>{row.is_active ? 'Close service' : 'Open service'}</button>}
             {((section === 'Staff Management' || section === 'Appointments') && <select value={row.status} onChange={(event) => updateStatus(row, event.target.value)} className="rounded-full border px-3 py-2 text-xs"><option value="PENDING">Pending</option><option value="WAITING">Waiting</option><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option><option value="ON_LEAVE">On leave</option><option value="CONFIRMED">Confirmed</option><option value="IN_PROGRESS">In progress</option><option value="COMPLETED">Completed</option><option value="CANCELLED">Cancelled</option><option value="NO_SHOW">No show</option></select>)}
-            {section === 'Notifications' && !row.is_read && <button type="button" onClick={async () => { const { error } = await supabase.from('notifications').update({ is_read: true, read_at: new Date().toISOString() }).eq('id', row.id); if (error) setMessage(error.message); else queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] }) }} className="rounded-full border px-3 py-2 text-xs font-semibold">Mark read</button>}
+            {section === 'Notifications' && <button type="button" onClick={async () => { const { error } = await supabase.from('notifications').update({ is_read: true, read_at: new Date().toISOString() }).eq('id', row.id).eq('salon_id', selectedSalonId); if (error) setMessage(error.message); else { setMessage('Notification marked as read.'); queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] }) } }} className="rounded-full border px-3 py-2 text-xs font-semibold">Mark read</button>}
           </div>
         </div>
       ))}
@@ -1698,8 +1849,8 @@ function SalonFloor({ salonId }) {
         supabase.from('employees').select('id, employee_name, status').eq('salon_id', salonId).order('employee_name'),
         supabase.from('employee_floor_status').select('employee_id, status').eq('salon_id', salonId),
         supabase.from('services').select('id, name, duration_minutes, is_active').eq('salon_id', salonId).eq('is_active', true).order('name'),
-        supabase.from('booking_staff').select('employee_id, booking_id, start_at, end_at, booking:bookings(id, status, customer_name_snapshot, customer_phone_snapshot, customer:profiles(full_name, phone), booking_items(service_name_snapshot))').eq('salon_id', salonId).eq('status', 'ACTIVE').gt('end_at', new Date().toISOString()),
-        supabase.from('queue_entries').select('id, booking_id, queue_number, status, estimated_wait_minutes, estimated_start_at, customer_name_snapshot, customer_phone_snapshot, customer:profiles(full_name, phone), booking:bookings(booking_type, status, scheduled_start, booking_items(service_name_snapshot), booking_staff(employee:employees(employee_name)) )').eq('salon_id', salonId).eq('queue_date', today).in('status', ['WAITING', 'CALLED', 'SERVING']).order('queue_number'),
+        supabase.from('booking_staff').select('employee_id, booking_id, start_at, end_at, booking:bookings(id, status, booking_items(service_name_snapshot))').eq('salon_id', salonId).eq('status', 'ACTIVE').gt('end_at', new Date().toISOString()),
+        supabase.from('queue_entries').select('id, booking_id, queue_number, status, estimated_wait_minutes, estimated_start_at, booking:bookings(booking_type, status, scheduled_start, booking_items(service_name_snapshot), booking_staff(employee:employees(employee_name)) )').eq('salon_id', salonId).eq('queue_date', today).in('status', ['WAITING', 'CALLED', 'SERVING']).order('queue_number'),
       ])
       const failed = [employees, statuses, services, assignments, queues].find((result) => result.error)
       if (failed) throw new Error(failed.error.message)
@@ -1742,14 +1893,13 @@ function SalonFloor({ salonId }) {
       floorQuery.refetch()
     }
   }
-  const customerName = (entry) => entry.customer_name_snapshot || entry.customer?.full_name || 'Walk-in customer'
   const serviceName = (entry) => entry.booking?.booking_items?.map((item) => item.service_name_snapshot).join(', ') || 'Service'
 
   return (
     <section className="space-y-5">
       <div className="flex flex-col gap-3 rounded-[28px] bg-[#0b1220] p-5 text-white shadow-xl sm:flex-row sm:items-center sm:justify-between">
         <div><p className="text-xs font-bold uppercase tracking-[0.2em] text-[#d9b78c]">Live operations</p><h2 className="mt-1 text-2xl font-black">Salon Floor</h2><p className="mt-1 text-sm text-slate-300">All times and ETAs are live estimates from Supabase.</p></div>
-        <button type="button" onClick={() => setWalkInOpen(true)} className="inline-flex items-center justify-center gap-2 rounded-full bg-[#d9b78c] px-5 py-3 text-sm font-black text-[#0b1220]"><Plus size={18} /> ADD WALK-IN CUSTOMER</button>
+        <button type="button" onClick={() => setWalkInOpen(true)} className="inline-flex items-center justify-center gap-2 rounded-full bg-[#d9b78c] px-5 py-3 text-sm font-black text-[#0b1220]"><Plus size={18} /> ADD WALK-IN SERVICE</button>
       </div>
       {actionError && <p className="rounded-2xl bg-rose-50 p-3 text-sm text-rose-700">{actionError}</p>}
       {actionMessage && <p className="rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-700">{actionMessage}</p>}
@@ -1774,7 +1924,7 @@ function SalonFloor({ salonId }) {
               <div><p className="font-bold text-slate-900">{employee.employee_name}</p><p className="mt-1 text-xs text-slate-500">Barber management</p></div>
               <span className={`rounded-full px-3 py-1 text-xs font-bold ${status === 'BUSY' ? 'bg-violet-100 text-violet-700' : status === 'AVAILABLE' ? 'bg-emerald-100 text-emerald-700' : status === 'BREAK' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>{status}</span>
             </div>
-            {assignment ? <div className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm"><p className="font-semibold">{booking?.customer_name_snapshot || booking?.customer?.full_name || 'Customer'}</p><p className="text-slate-500">{booking?.booking_items?.map((item) => item.service_name_snapshot).join(', ') || 'Service'} • started {new Date(assignment.start_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</p><p className="mt-1 text-xs text-slate-500">Estimated remaining: {Math.max(0, Math.ceil((new Date(assignment.end_at).getTime() - Date.now()) / 60000))} min</p></div> : <p className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm text-slate-500">No active customer</p>}
+            {assignment ? <div className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm"><p className="font-semibold">{booking?.booking_items?.map((item) => item.service_name_snapshot).join(', ') || 'Service'}</p><p className="text-slate-500">Started {new Date(assignment.start_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</p><p className="mt-1 text-xs text-slate-500">Estimated remaining: {Math.max(0, Math.ceil((new Date(assignment.end_at).getTime() - Date.now()) / 60000))} min</p></div> : <p className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm text-slate-500">No active service</p>}
             <div className="mt-4 flex flex-wrap gap-2">
               {assignment ? <button type="button" disabled={busyAction === 'Complete service'} onClick={() => runAction('Complete service', 'complete_service', { p_booking_id: assignment.booking_id })} className="rounded-full bg-emerald-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">Complete Service</button> : <>
                 <button type="button" onClick={() => runAction('Available', 'update_staff_availability', { p_employee_id: employee.id, p_status: 'AVAILABLE' })} className="rounded-full border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-700">Mark Available</button>
@@ -1787,43 +1937,54 @@ function SalonFloor({ salonId }) {
       </div>
       <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
         <div className="mb-4 flex items-center justify-between"><div><h3 className="text-xl font-black">Unified waiting queue</h3><p className="text-sm text-slate-500">Online appointments and walk-ins, ordered by queue number.</p></div><button type="button" onClick={() => floorQuery.refetch()} className="rounded-full border p-2 text-slate-500" aria-label="Refresh floor"><RefreshCw size={16} /></button></div>
-        <div className="space-y-2">{waiting.map((entry) => <div key={entry.id} className="flex flex-col gap-3 rounded-2xl bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex items-center gap-2"><span className="rounded-full bg-slate-900 px-2 py-1 text-[10px] font-bold text-white">{entry.booking?.booking_type === 'WALK_IN' ? 'WALK_IN' : 'ONLINE'}</span><p className="font-semibold">{customerName(entry)}</p></div><p className="mt-1 text-sm text-slate-500">{serviceName(entry)} • {entry.booking?.booking_staff?.[0]?.employee?.employee_name || 'Unassigned'}</p></div><div className="text-left sm:text-right"><p className="font-bold">Queue {entry.queue_number}</p><p className="text-xs text-slate-500">Estimated wait: {entry.estimated_wait_minutes ?? 'calculating'} min</p><div className="mt-2 flex flex-wrap justify-end gap-2">{!entry.booking?.booking_staff?.length && <><select value={assignmentChoice[entry.booking_id] || ''} onChange={(event) => setAssignmentChoice((current) => ({ ...current, [entry.booking_id]: event.target.value }))} className="rounded-full border bg-white px-2 py-1 text-xs"><option value="">Assign barber</option>{availableBarbers.map((employee) => <option key={employee.id} value={employee.id}>{employee.employee_name}</option>)}</select><button type="button" disabled={!assignmentChoice[entry.booking_id]} onClick={() => runAction('Assign customer', 'assign_waiting_customer', { p_booking_id: entry.booking_id, p_employee_id: assignmentChoice[entry.booking_id] })} className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white disabled:opacity-40">Assign</button></>}<button type="button" onClick={() => runAction('Cancel booking', 'cancel_walkin_booking', { p_booking_id: entry.booking_id })} className="rounded-full px-2 py-1 text-xs font-semibold text-rose-600">Cancel</button></div></div></div>)}</div>
+        <div className="space-y-2">{waiting.map((entry) => <div key={entry.id} className="flex flex-col gap-3 rounded-2xl bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div><span className="rounded-full bg-slate-900 px-2 py-1 text-[10px] font-bold text-white">{entry.booking?.booking_type === 'WALK_IN' ? 'WALK-IN' : 'ONLINE'}</span><p className="mt-2 font-semibold">{serviceName(entry)}</p><p className="mt-1 text-sm text-slate-500">{entry.booking?.booking_staff?.[0]?.employee?.employee_name || 'Unassigned'}</p></div><div className="text-left sm:text-right"><p className="font-bold">Queue {entry.queue_number}</p><p className="text-xs text-slate-500">Estimated wait: {entry.estimated_wait_minutes ?? 'calculating'} min</p><div className="mt-2 flex flex-wrap justify-end gap-2">{!entry.booking?.booking_staff?.length && <><select value={assignmentChoice[entry.booking_id] || ''} onChange={(event) => setAssignmentChoice((current) => ({ ...current, [entry.booking_id]: event.target.value }))} className="rounded-full border bg-white px-2 py-1 text-xs"><option value="">Assign barber</option>{availableBarbers.map((employee) => <option key={employee.id} value={employee.id}>{employee.employee_name}</option>)}</select><button type="button" disabled={!assignmentChoice[entry.booking_id]} onClick={() => runAction('Assign customer', 'assign_waiting_customer', { p_booking_id: entry.booking_id, p_employee_id: assignmentChoice[entry.booking_id] })} className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white disabled:opacity-40">Assign</button></>}<button type="button" onClick={() => runAction('Cancel booking', 'cancel_walkin_booking', { p_booking_id: entry.booking_id })} className="rounded-full px-2 py-1 text-xs font-semibold text-rose-600">Cancel</button></div></div></div>)}</div>
         {waiting.length === 0 && !floorQuery.isLoading && <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">No customers are waiting.</p>}
       </div>
-      {walkInOpen && <WalkInModal salonId={salonId} services={data.services} employees={data.employees} onClose={() => setWalkInOpen(false)} onCreated={() => { setWalkInOpen(false); floorQuery.refetch(); setActionMessage('Walk-in customer added') }} />}
+      {walkInOpen && <WalkInModal salonId={salonId} services={data.services} onClose={() => setWalkInOpen(false)} onCreated={() => { setWalkInOpen(false); floorQuery.refetch(); setActionMessage('Walk-in service added') }} />}
     </section>
   )
 }
 
-function WalkInModal({ salonId, services, employees, onClose, onCreated }) {
-  const [form, setForm] = useState({ name: '', phone: '', serviceId: services[0]?.id || '', mode: 'AUTO', employeeId: '' })
+function WalkInModal({ salonId, services, onClose, onCreated }) {
+  const [serviceId, setServiceId] = useState(services[0]?.id || '')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const submit = async (event) => {
     event.preventDefault()
     setSaving(true)
     setError('')
-    const { error: rpcError } = await supabase.rpc('create_walkin_booking', {
-      p_salon_id: salonId,
-      p_customer_name: form.name,
-      p_customer_phone: form.phone || null,
-      p_service_id: form.serviceId,
-      p_preferred_employee_id: form.mode === 'MANUAL' ? form.employeeId : null,
-      p_assignment_mode: form.mode,
-    })
-    setSaving(false)
-    if (rpcError) setError(rpcError.message)
-    else onCreated()
+    try {
+      const { error: rpcError } = await supabase.rpc('create_walkin_booking', {
+        p_salon_id: salonId,
+        p_customer_name: 'Walk-in',
+        p_customer_phone: null,
+        p_service_id: serviceId,
+        p_preferred_employee_id: null,
+        p_assignment_mode: 'AUTO',
+      })
+      if (rpcError) throw new Error(rpcError.message)
+      onCreated()
+    } catch (submitError) {
+      setError(getErrorMessage(submitError, 'Unable to add this walk-in service.'))
+    } finally {
+      setSaving(false)
+    }
   }
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"><form onSubmit={submit} className="w-full max-w-lg rounded-[28px] bg-white p-6 shadow-2xl"><div className="flex items-center justify-between"><h2 className="text-2xl font-black">Add walk-in customer</h2><button type="button" onClick={onClose} className="text-slate-400">Close</button></div><div className="mt-5 grid gap-4"><input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Customer name *" className="rounded-2xl border px-4 py-3" /><input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} placeholder="Mobile number (optional)" className="rounded-2xl border px-4 py-3" /><select required value={form.serviceId} onChange={(event) => setForm({ ...form, serviceId: event.target.value })} className="rounded-2xl border px-4 py-3">{services.map((service) => <option key={service.id} value={service.id}>{service.name} • {service.duration_minutes} min</option>)}</select><select value={form.mode} onChange={(event) => setForm({ ...form, mode: event.target.value })} className="rounded-2xl border px-4 py-3"><option value="AUTO">Auto-assign next available barber</option><option value="QUEUE">Add to waiting queue</option><option value="MANUAL">Manually select a barber</option></select>{form.mode === 'MANUAL' && <select required value={form.employeeId} onChange={(event) => setForm({ ...form, employeeId: event.target.value })} className="rounded-2xl border px-4 py-3"><option value="">Select barber</option>{employees.filter((employee) => !employee.assignment && employee.floorStatus === 'AVAILABLE').map((employee) => <option key={employee.id} value={employee.id}>{employee.employee_name}</option>)}</select>}</div>{error && <p className="mt-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}<button disabled={saving} className="mt-5 w-full rounded-full bg-slate-900 px-5 py-3 font-bold text-white disabled:opacity-50">{saving ? 'Adding...' : 'Add customer'}</button></form></div>
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"><form onSubmit={submit} className="w-full max-w-lg rounded-[28px] bg-white p-6 shadow-2xl"><div className="flex items-center justify-between"><h2 className="text-2xl font-black">Add walk-in service</h2><button type="button" onClick={onClose} className="text-slate-400">Close</button></div><p className="mt-2 text-sm text-slate-500">A free barber will be assigned automatically. If none is available, this service joins the waiting queue.</p><div className="mt-5 grid gap-4"><select required value={serviceId} onChange={(event) => setServiceId(event.target.value)} className="rounded-2xl border px-4 py-3">{services.map((service) => <option key={service.id} value={service.id}>{service.name} • {service.duration_minutes} min</option>)}</select></div>{error && <p className="mt-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}<button disabled={saving} className="mt-5 w-full rounded-full bg-slate-900 px-5 py-3 font-bold text-white disabled:opacity-50">{saving ? 'Adding...' : 'Add to salon floor'}</button></form></div>
 }
 
 function AdminDashboard({ onLogout }) {
   const [checkingSession, setCheckingSession] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [activeSection, setActiveSection] = useState('Handle Offline')
   const [menuOpen, setMenuOpen] = useState(false)
   const [selectedSalonId, setSelectedSalonId] = useState('')
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const logout = async () => {
+    await onLogout()
+    navigate('/', { replace: true })
+  }
   const salonsQuery = useQuery({
     queryKey: ['admin-salons'],
     enabled: !checkingSession && isSupabaseConfigured,
@@ -1834,6 +1995,14 @@ function AdminDashboard({ onLogout }) {
     },
   })
   const salonsList = salonsQuery.data || []
+  const refreshDashboard = async () => {
+    setRefreshing(true)
+    try {
+      await queryClient.invalidateQueries()
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   useEffect(() => {
     if (!selectedSalonId && salonsList[0]?.id) setSelectedSalonId(salonsList[0].id)
@@ -1919,7 +2088,7 @@ function AdminDashboard({ onLogout }) {
                     {item}
                   </button>
                 ))}
-                <button type="button" onClick={onLogout} className="mt-1 inline-flex items-center gap-2 rounded-xl border-t border-slate-200 px-3 py-3 text-left text-slate-500 hover:bg-slate-100">
+                <button type="button" onClick={logout} className="mt-1 inline-flex items-center gap-2 rounded-xl border-t border-slate-200 px-3 py-3 text-left text-slate-500 hover:bg-slate-100">
                   <LogOut size={15} /> Logout
                 </button>
               </nav>
@@ -1947,8 +2116,8 @@ function AdminDashboard({ onLogout }) {
                 <h2 className="text-xl font-black tracking-[-0.06em]">Live customers queue</h2>
                     <p className="mt-1 text-sm text-slate-500">Active customers for today, loaded from Supabase.</p>
               </div>
-              <button type="button" onClick={() => queueQuery.refetch()} className="rounded-full border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50">
-                Refresh
+              <button type="button" onClick={refreshDashboard} disabled={refreshing} className="inline-flex items-center gap-2 rounded-full border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+                <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} /> {refreshing ? 'Refreshing...' : 'Refresh'}
               </button>
             </div>
             {!isSupabaseConfigured && <p className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-700">Connect Supabase to view the live queue.</p>}
@@ -2146,7 +2315,7 @@ function AuthPage({ initialMode, onLogin, onRegister }) {
 
         {mode === 'login' && (
           <div className="mt-5 text-center text-sm text-slate-500">
-            Forgot password? <button type="button" className="font-semibold text-violet-700">Reset securely</button>
+            Forgot password? <Link to="/reset-password" className="font-semibold text-violet-700">Reset securely</Link>
           </div>
         )}
 
@@ -2158,6 +2327,17 @@ function AuthPage({ initialMode, onLogin, onRegister }) {
 function CustomerApp({ user, onLogout }) {
   const [userBookings, setUserBookings] = useState([])
   const [profile, setProfile] = useState(user)
+
+  const clearBookings = () => {
+    const key = `booksaloon-hidden-bookings-${profile.id}`
+    const previous = JSON.parse(localStorage.getItem(key) || '[]')
+    const hiddenIds = new Set(previous)
+    userBookings.forEach((booking) => {
+      if (booking.bookingId) hiddenIds.add(booking.bookingId)
+    })
+    localStorage.setItem(key, JSON.stringify([...hiddenIds]))
+    setUserBookings([])
+  }
 
   useEffect(() => {
     let active = true
@@ -2192,7 +2372,8 @@ function CustomerApp({ user, onLogout }) {
           }))
         }
         if (active && Array.isArray(bookingData)) {
-          setUserBookings(bookingData.map((booking) => ({
+          const hiddenIds = new Set(JSON.parse(localStorage.getItem(`booksaloon-hidden-bookings-${authData.user.id}`) || '[]'))
+          setUserBookings(bookingData.filter((booking) => !hiddenIds.has(booking.id)).map((booking) => ({
             id: booking.booking_number || booking.id,
             bookingId: booking.id,
             service: Array.isArray(booking.booking_items)
@@ -2228,7 +2409,7 @@ function CustomerApp({ user, onLogout }) {
         <Routes>
           <Route index element={<Navigate to="home" replace />} />
           <Route path="home" element={<HomePage userName={profile.fullName || 'Customer'} userId={profile.id} userBookings={userBookings} onBookingCreated={(booking) => setUserBookings((current) => [booking, ...current])} />} />
-          <Route path="bookings" element={<BookingsPage userBookings={userBookings} />} />
+          <Route path="bookings" element={<BookingsPage userBookings={userBookings} onClearBookings={clearBookings} />} />
           <Route path="queue/:bookingId" element={<LiveQueueRoute userId={profile.id} />} />
           <Route path="notifications" element={<NotificationsPage userId={profile.id} />} />
           <Route path="profile" element={<ProfilePage user={profile} />} />
@@ -2267,7 +2448,10 @@ function App() {
           return
         }
         const user = data.session?.user
-        if (active && user?.email?.startsWith('phone-')) {
+        if (user?.email && /^\d{10}@booksaloon\.app$/.test(user.email)) {
+          const validAdminSession = await validateAdminSession()
+          if (active && validAdminSession) setIsAdminAuthenticated(true)
+        } else if (active && user?.email?.startsWith('phone-')) {
           setCurrentUser((previous) => ({
             ...previous,
             id: user.id,
@@ -2321,8 +2505,14 @@ function App() {
         fullName: profile?.full_name || data.user.user_metadata?.full_name || 'Customer',
       }))
     } else {
-      setCurrentUser((previous) => ({ ...previous, phone, fullName: previous.fullName || 'Customer' }))
+      const accounts = getDemoAccounts()
+      const account = accounts[normalizedPhone]
+      if (account && account.passwordHash !== await hashPassword(password)) {
+        throw new Error('Unable to sign in. Please check your phone number and password.')
+      }
+      setCurrentUser((previous) => ({ ...previous, phone, fullName: account?.fullName || previous.fullName || 'Customer' }))
     }
+    setIsAdminAuthenticated(false)
     setIsAuthenticated(true)
     return { success: true }
   }
@@ -2354,8 +2544,10 @@ function App() {
       }
       setCurrentUser((previous) => ({ ...previous, id: data.user.id, fullName, phone }))
     } else {
+      saveDemoAccount(phone, { fullName, passwordHash: await hashPassword(password) })
       setCurrentUser((previous) => ({ ...previous, fullName, phone }))
     }
+    setIsAdminAuthenticated(false)
     setIsAuthenticated(true)
     return { success: true }
   }
@@ -2382,6 +2574,7 @@ function App() {
       throw new Error('Invalid admin credentials.')
     }
 
+    setIsAuthenticated(false)
     try {
       await issueAdminSession()
       setIsAdminAuthenticated(true)
@@ -2394,7 +2587,37 @@ function App() {
   const onAdminLogout = async () => {
     await revokeAdminSession()
     await supabase.auth.signOut()
+    setIsAuthenticated(false)
     setIsAdminAuthenticated(false)
+  }
+
+  const onRequestPasswordReset = async (phone) => {
+    if (!isSupabaseConfigured) {
+      return { demoOtp: String(Math.floor(1000 + Math.random() * 9000)) }
+    }
+    const { data, error } = await supabase.functions.invoke('reset-password-by-phone', {
+      body: { action: 'request', phone },
+    })
+    if (error) throw new Error(error.message)
+    if (data?.error) throw new Error(data.error)
+    return data
+  }
+
+  const onResetPassword = async ({ phone, otp, newPassword }) => {
+    if (isSupabaseConfigured) {
+      const { data, error } = await supabase.functions.invoke('reset-password-by-phone', {
+        body: { action: 'reset', phone, otp, newPassword },
+      })
+      if (error) throw new Error(error.message)
+      if (data?.error) throw new Error(data.error)
+      return
+    }
+    const phoneDigits = phone.replace(/^\+91/, '')
+    const accounts = getDemoAccounts()
+    saveDemoAccount(phoneDigits, {
+      fullName: accounts[phoneDigits]?.fullName || 'Customer',
+      passwordHash: await hashPassword(newPassword),
+    })
   }
 
   return (
@@ -2402,12 +2625,13 @@ function App() {
       <BrowserRouter>
       {authLoading ? <LoadingScreen /> : (
       <Routes>
-        <Route path="/" element={isAuthenticated ? <Navigate to="/customer/home" replace /> : <FrontendLandingPage />} />
-        <Route path="/login" element={<AuthPage initialMode="login" onLogin={onLogin} onRegister={onRegister} />} />
-        <Route path="/register" element={<AuthPage initialMode="register" onLogin={onLogin} onRegister={onRegister} />} />
+        <Route path="/" element={isAdminAuthenticated ? <Navigate to="/admin/dashboard" replace /> : isAuthenticated ? <Navigate to="/customer/home" replace /> : <FrontendLandingPage />} />
+        <Route path="/login" element={isAdminAuthenticated ? <Navigate to="/admin/dashboard" replace /> : isAuthenticated ? <Navigate to="/customer/home" replace /> : <AuthPage initialMode="login" onLogin={onLogin} onRegister={onRegister} />} />
+        <Route path="/register" element={isAdminAuthenticated ? <Navigate to="/admin/dashboard" replace /> : isAuthenticated ? <Navigate to="/customer/home" replace /> : <AuthPage initialMode="register" onLogin={onLogin} onRegister={onRegister} />} />
+        <Route path="/reset-password" element={<PasswordResetPage onRequestReset={onRequestPasswordReset} onResetPassword={onResetPassword} />} />
         <Route path="/customer/*" element={isAuthenticated ? <CustomerApp user={currentUser} onLogout={onLogout} /> : <Navigate to="/login" replace />} />
         <Route path="/admin" element={<Navigate to={isAdminAuthenticated ? '/admin/dashboard' : '/admin/login'} replace />} />
-        <Route path="/admin/login" element={<AdminLogin onLogin={onAdminLogin} />} />
+        <Route path="/admin/login" element={isAdminAuthenticated ? <Navigate to="/admin/dashboard" replace /> : <AdminLogin onLogin={onAdminLogin} />} />
         <Route path="/admin/dashboard" element={isAdminAuthenticated ? <AdminDashboard onLogout={onAdminLogout} /> : <Navigate to="/admin/login" replace />} />
         <Route path="*" element={<Navigate to={isAuthenticated ? '/customer/home' : '/login'} replace />} />
       </Routes>

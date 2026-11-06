@@ -14,7 +14,19 @@ public class QueueMessagingService extends FirebaseMessagingService {
         } catch (NumberFormatException ignored) {
             // Invalid progress is safely represented as zero.
         }
+        long estimatedStartAt = 0;
+        try {
+            estimatedStartAt = Long.parseLong(message.getData().getOrDefault("estimatedStartAt", "0"));
+        } catch (NumberFormatException ignored) {
+            // Invalid timestamps do not enable the notification countdown.
+        }
+        long startedAt = 0;
+        try {
+            startedAt = Long.parseLong(message.getData().getOrDefault("startedAt", "0"));
+        } catch (NumberFormatException ignored) {
+            // Invalid timestamps leave the notification timer anchored to receipt time.
+        }
         String bookingId = message.getData().getOrDefault("bookingId", "");
-        QueueNotificationPlugin.postQueueNotification(this, title, body, progress, bookingId);
+        QueueNotificationPlugin.postQueueNotification(this, title, body, progress, bookingId, estimatedStartAt, startedAt);
     }
 }

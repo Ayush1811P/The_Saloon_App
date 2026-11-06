@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock3,
+  Download,
   Menu,
   Scissors,
   Sparkles,
@@ -496,6 +497,12 @@ export default function LandingPage() {
           <Offers />
           <FinalCta go={go} />
         </main>
+
+        <section aria-label="Mobile app download" className="bg-cream px-5 pb-12 lg:px-8">
+          <div className="mx-auto flex max-w-7xl justify-center">
+            <GoldButton>Download our app <Download size={16} /></GoldButton>
+          </div>
+        </section>
 
         <footer className="bg-ink px-5 py-12 text-slate-400 lg:px-8">
           <div className="mx-auto grid max-w-7xl gap-10 sm:grid-cols-2 md:grid-cols-[1.4fr_1fr_1fr]">

@@ -5,7 +5,8 @@
 - `salon_id` scopes tenant-owned data.
 - `profiles.id` references `auth.users.id`.
 - Supabase Auth stores passwords; never create a password column.
-- No OTP and no payment gateway are implemented by these migrations.
+- SMS OTP delivery and payment processing are not configured. Migration 017
+  supports a temporary, screen-displayed demo OTP for password resets.
 - Money is stored as integer paise.
 
 ## Apply migrations
@@ -30,9 +31,28 @@ Recommended order:
 14. 014_queue_notifications.sql
 15. 015_queue_event_generation.sql
 16. 016_notification_delivery.sql
+17. 017_customer_self_service.sql
+18. 018_booking_availability_and_admin_notifications.sql
 
-For an existing project, apply only migrations 015 and 016 after the already
-applied migrations. Do not rerun `BOOKSALOON_ALL_MIGRATIONS.sql`.
+For an existing project that already has migration 017, apply migration 018.
+Do not rerun `BOOKSALOON_ALL_MIGRATIONS.sql`.
+
+Deploy the password reset Edge Function after applying migration 017:
+
+```text
+supabase functions deploy reset-password-by-phone
+```
+
+The function changes passwords through the Supabase Auth Admin API and stores
+only a hashed, expiring OTP. The temporary OTP is returned to the page for
+testing; configure a real SMS provider and stop returning the code before
+production use. The migration also enables customer notification deletion and
+anonymous, service-only walk-in queue entries.
+
+Migration 018 grants salon admins access to read, mark read and clear their
+salon's notifications. It checks staff floor status, shifts, breaks, leave,
+service skills and overlapping assignments before confirming a booking. When
+no eligible barber is available, the booking remains in the waiting queue.
 
 Migration 016 exposes the privileged
 `claim_queue_notification_events(integer, integer)` RPC only to the
