@@ -1,4 +1,4 @@
-import { Component, useEffect, useMemo, useState } from 'react'
+import { Component, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowRight,
   Bell,
@@ -9,6 +9,7 @@ import {
   Clock3,
   Eye,
   EyeOff,
+  LocateFixed,
   LogOut,
   MapPin,
   Menu,
@@ -23,6 +24,7 @@ import {
   UserRound,
   Users,
   WalletCards,
+  X,
 } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -43,6 +45,12 @@ import { isSupabaseConfigured, supabase } from './lib/supabase'
 import { initializeAndroidNotifications, publishQueueNotification, requestAndroidNotificationPermission } from './services/platformNotificationAdapter'
 import FrontendLandingPage from '../frontend/src/components/LandingPage'
 import LiveQueueTracker from './components/queue/LiveQueueTracker'
+import {
+  getOneTimeLocation,
+  isValidCoordinates,
+  requestForegroundLocationPermission,
+} from './services/smartLeaveReminder'
+import { clearCustomerBookingHistory, filterCustomerBookingHistory } from './services/customerHistory'
 
 const formatCurrency = (value) => `₹${value.toLocaleString('en-IN')}`
 const INDIAN_PHONE_PATTERN = /^[6-9]\d{9}$/
@@ -57,6 +65,30 @@ function getAuthEmail(phone) {
 
 function getAdminAuthEmail(phone) {
   return `${phone.replace('+91', '')}@booksaloon.app`
+}
+
+function useDismissableMenu(open, setOpen) {
+  const menuRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return undefined
+
+    const closeOnOutsideClick = (event) => {
+      if (!menuRef.current?.contains(event.target)) setOpen(false)
+    }
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+
+    document.addEventListener('pointerdown', closeOnOutsideClick)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open, setOpen])
+
+  return menuRef
 }
 
 const DEMO_ACCOUNTS_KEY = 'booksaloon-demo-accounts'
@@ -390,6 +422,7 @@ function LandingPage() {
 
 function AppHeader({ title, subtitle, userName, onLogout }) {
   const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useDismissableMenu(menuOpen, setMenuOpen)
   const navigate = useNavigate()
 
   return (
@@ -432,18 +465,27 @@ function AppHeader({ title, subtitle, userName, onLogout }) {
           </button>
         </div>
 
-        <div className="relative md:hidden">
+        <div ref={menuRef} className="relative md:hidden">
           <button
             type="button"
             onClick={() => setMenuOpen((value) => !value)}
             aria-expanded={menuOpen}
-            aria-label="Open account menu"
+            aria-controls="customer-account-menu"
+            aria-label={menuOpen ? 'Close account menu' : 'Open account menu'}
             className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700"
           >
-            <Menu size={18} />
+            {menuOpen ? <X size={18} /> : <Menu size={18} />}
           </button>
-          {menuOpen && (
-            <div className="absolute right-0 top-14 z-50 w-40 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
+          <AnimatePresence>
+            {menuOpen && (
+              <motion.div
+                id="customer-account-menu"
+                initial={{ opacity: 0, y: -14 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, x: 28 }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                className="absolute right-0 top-14 z-50 w-40 origin-top-right rounded-2xl border border-slate-200 bg-white p-2 shadow-xl"
+              >
               <button
                 type="button"
                 onClick={onLogout}
@@ -452,8 +494,9 @@ function AppHeader({ title, subtitle, userName, onLogout }) {
                 <LogOut size={15} />
                 Logout
               </button>
-            </div>
-          )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
     </header>
@@ -823,7 +866,9 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
       salon: 'BOOKSALOON Demo Salon',
       amount: `₹${totalWithPriority}`,
       barber: result.employee_name,
-      date: new Date(result.estimated_start_at).toLocaleDateString('en-IN'),
+      date: result.estimated_start_at
+        ? new Date(result.estimated_start_at).toLocaleDateString('en-IN')
+        : 'Waiting for barber availability',
       status: result.booking_status === 'CONFIRMED' ? 'Confirmed' : 'Waiting',
       estimatedWait: result.estimated_wait_minutes,
     }
@@ -831,7 +876,9 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
     if (result.booking_status === 'WAITING') {
       await publishQueueNotification({
         title: 'The Saloon waiting time',
-        body: `${result.estimated_wait_minutes ?? 0} minutes estimated wait. Tap to track your queue.`,
+        body: result.estimated_wait_minutes == null
+          ? 'Barbers are currently unavailable. Your appointment is queued; the wait time will be updated.'
+          : `${result.estimated_wait_minutes} minutes estimated wait. Tap to track your queue.`,
         bookingId: result.booking_id,
         progress: 0,
         estimatedStartAt: result.estimated_start_at,
@@ -1107,6 +1154,7 @@ function NotificationsPage({ userId }) {
   const [userNotifications, setUserNotifications] = useState([])
   const [message, setMessage] = useState('')
   const [clearing, setClearing] = useState(false)
+  const clearedAt = useRef(0)
 
   useEffect(() => {
     let active = true
@@ -1129,6 +1177,7 @@ function NotificationsPage({ userId }) {
       channel = supabase
         .channel(`customer-notifications-${userId}`)
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` }, (payload) => {
+          if (new Date(payload.new.created_at).getTime() <= clearedAt.current) return
           setUserNotifications((current) => current.some((item) => item.id === payload.new.id) ? current : [payload.new, ...current])
         })
         .subscribe()
@@ -1144,16 +1193,18 @@ function NotificationsPage({ userId }) {
   const clearNotifications = async () => {
     setClearing(true)
     setMessage('')
-    if (isSupabaseConfigured && userId) {
-      const { error } = await supabase.from('notifications').delete().eq('user_id', userId)
-      if (error) {
-        setMessage(error.message)
-        setClearing(false)
-        return
+    try {
+      if (isSupabaseConfigured && userId) {
+        const { error } = await supabase.rpc('clear_customer_notifications')
+        if (error) throw new Error(error.message)
       }
+      clearedAt.current = Date.now()
+      setUserNotifications([])
+    } catch (error) {
+      setMessage(error.message || 'Unable to clear notifications.')
+    } finally {
+      setClearing(false)
     }
-    setUserNotifications([])
-    setClearing(false)
   }
 
   return (
@@ -1465,6 +1516,10 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
   const [form, setForm] = useState({})
   const [serviceFormOpen, setServiceFormOpen] = useState(false)
   const [message, setMessage] = useState('')
+  const [clearingNotifications, setClearingNotifications] = useState(false)
+  const [clearingAppointments, setClearingAppointments] = useState(false)
+  const [clearAppointmentsMessage, setClearAppointmentsMessage] = useState('')
+  const [clearAppointmentsError, setClearAppointmentsError] = useState(false)
   const queryClient = useQueryClient()
   const tableBySection = {
     'Services & Pricing': 'services',
@@ -1518,6 +1573,30 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
   }, [queryClient, section, selectedSalonId, table])
 
   const updateForm = (key, value) => setForm((current) => ({ ...current, [key]: value }))
+  const clearAppointments = async () => {
+    if (!selectedSalonId || clearingAppointments) return
+    if (!window.confirm('Permanently clear all appointments for this salon? New appointments will still be saved normally.')) return
+
+    setClearingAppointments(true)
+    setClearAppointmentsMessage('')
+    setClearAppointmentsError(false)
+    try {
+      const { data, error } = await supabase.rpc('clear_admin_salon_appointments', {
+        p_salon_id: selectedSalonId,
+      })
+      if (error) throw new Error(error.message)
+
+      queryClient.setQueryData(['admin-control', 'Appointments', selectedSalonId], [])
+      await queryClient.invalidateQueries({ queryKey: ['admin-control', 'Appointments', selectedSalonId] })
+      setClearAppointmentsMessage(`${data || 0} appointment${data === 1 ? '' : 's'} cleared.`)
+    } catch (error) {
+      setClearAppointmentsError(true)
+      setClearAppointmentsMessage(error.message || 'Unable to clear appointments.')
+    } finally {
+      setClearingAppointments(false)
+    }
+  }
+
   const save = async (event) => {
     event.preventDefault()
     setMessage('')
@@ -1650,11 +1729,21 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
   }
 
   const clearNotifications = async () => {
-    const { error } = await supabase.from('notifications').delete().eq('salon_id', selectedSalonId)
-    if (error) setMessage(error.message)
-    else {
-      setMessage('Notifications cleared.')
-      queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })
+    if (!selectedSalonId) return
+    setClearingNotifications(true)
+    setMessage('')
+    try {
+      const { data: deletedCount, error } = await supabase.rpc('clear_admin_salon_notifications', {
+        p_salon_id: selectedSalonId,
+      })
+      if (error) throw new Error(error.message)
+      queryClient.setQueryData(['admin-control', section, selectedSalonId], [])
+      setMessage(`${deletedCount || 0} notification${deletedCount === 1 ? '' : 's'} cleared, including read notifications.`)
+      await queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })
+    } catch (error) {
+      setMessage(error.message || 'Unable to clear salon notifications.')
+    } finally {
+      setClearingNotifications(false)
     }
   }
 
@@ -1790,11 +1879,14 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
           {serviceFormOpen ? 'Cancel' : 'Add new service'}
         </button>
       ) : section === 'Notifications' ? (
-        <button type="button" onClick={clearNotifications} className="rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700">Clear all notifications</button>
-      ) : section === 'Appointments' ? null : (
+        <button type="button" onClick={clearNotifications} disabled={clearingNotifications || query.isLoading} className="rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700 disabled:opacity-50">{clearingNotifications ? 'Clearing...' : 'Clear all notifications'}</button>
+      ) : section === 'Appointments' ? (
+        <button type="button" onClick={clearAppointments} disabled={clearingAppointments || query.isLoading || !selectedSalonId} className="rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-50 disabled:opacity-50">{clearingAppointments ? 'Clearing appointments...' : 'Clear appointments'}</button>
+      ) : (
         <form onSubmit={save} className="flex flex-1 flex-col gap-3 sm:flex-row sm:justify-end">{renderForm()}<PrimaryButton type="submit">{form.id ? 'Update' : 'Save'}</PrimaryButton></form>
       )}
     </div>
+    {clearAppointmentsMessage && <p role={clearAppointmentsError ? 'alert' : 'status'} className={`rounded-2xl p-3 text-sm ${clearAppointmentsError ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>{clearAppointmentsMessage}</p>}
     {section === 'Services & Pricing' && serviceFormOpen && (
       <form onSubmit={save} className="rounded-[28px] border border-violet-100 bg-violet-50/50 p-5">
         <div className="grid gap-3 md:grid-cols-2">{renderForm()}</div>
@@ -1832,6 +1924,179 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
   </section>
 }
 
+function SalonLocationSettings({ salonId }) {
+  const [form, setForm] = useState({ latitude: '', longitude: '', location_description: '' })
+  const [locationMode, setLocationMode] = useState('MANUAL')
+  const [gpsCandidate, setGpsCandidate] = useState(null)
+  const [gpsConfirmed, setGpsConfirmed] = useState(false)
+  const [locating, setLocating] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState('')
+  const queryClient = useQueryClient()
+  const locationQuery = useQuery({
+    queryKey: ['admin-salon-location', salonId],
+    enabled: Boolean(salonId),
+    queryFn: async () => {
+      const { data, error } = await supabase.from('salons')
+        .select('id, name, address_line1, location_description, latitude, longitude, location_source, location_updated_at')
+        .eq('id', salonId)
+        .single()
+      if (error) throw new Error(error.message)
+      return data
+    },
+  })
+
+  useEffect(() => {
+    const saved = locationQuery.data
+    if (!saved) return
+    setForm({
+      latitude: saved.latitude == null ? '' : String(saved.latitude),
+      longitude: saved.longitude == null ? '' : String(saved.longitude),
+      location_description: saved.location_description || saved.address_line1 || '',
+    })
+    setLocationMode(saved.location_source || 'MANUAL')
+    setGpsCandidate(null)
+    setGpsConfirmed(false)
+  }, [locationQuery.data])
+
+  const detectLocation = async () => {
+    setLocating(true)
+    setMessage('')
+    try {
+      const position = await getOneTimeLocation({
+        isNative: Boolean(window.Capacitor?.isNativePlatform?.()),
+      })
+      setForm((current) => ({
+        ...current,
+        latitude: Number(position.latitude).toFixed(6),
+        longitude: Number(position.longitude).toFixed(6),
+      }))
+      setGpsCandidate(position)
+      setGpsConfirmed(false)
+      setLocationMode('GPS')
+      setMessage('Location detected. Review and confirm it before saving.')
+    } catch (error) {
+      setMessage(error.message || 'Unable to get the current location.')
+    } finally {
+      setLocating(false)
+    }
+  }
+
+  const confirmDetectedLocation = () => {
+    setGpsConfirmed(true)
+    setMessage('Detected coordinates confirmed. Save to apply this salon location.')
+  }
+
+  const updateManualField = (field, value) => {
+    setLocationMode('MANUAL')
+    setGpsCandidate(null)
+    setGpsConfirmed(false)
+    setForm((current) => ({ ...current, [field]: value }))
+  }
+
+  const saveLocation = async (event) => {
+    event.preventDefault()
+    setMessage('')
+    if (!form.location_description.trim()) {
+      setMessage('Enter the salon address or a short location description.')
+      return
+    }
+    if (!isValidCoordinates(form.latitude, form.longitude)) {
+      setMessage('Enter valid latitude (-90 to 90) and longitude (-180 to 180).')
+      return
+    }
+    if (locationMode === 'GPS' && !gpsConfirmed) {
+      setMessage('Confirm the detected GPS location before saving.')
+      return
+    }
+    setSaving(true)
+    try {
+      const latitude = Number(Number(form.latitude).toFixed(6))
+      const longitude = Number(Number(form.longitude).toFixed(6))
+      const { data, error } = await supabase.from('salons').update({
+        location_description: form.location_description.trim(),
+        latitude,
+        longitude,
+        location_source: locationMode,
+        location_updated_at: new Date().toISOString(),
+      }).eq('id', salonId).select('id').maybeSingle()
+      if (error) throw new Error(error.message)
+      if (!data) throw new Error('You are not authorized to update this salon location.')
+      setGpsCandidate(null)
+      setGpsConfirmed(false)
+      setMessage('Salon location saved.')
+      queryClient.invalidateQueries({ queryKey: ['admin-salon-location', salonId] })
+      queryClient.invalidateQueries({ queryKey: ['queue-booking'] })
+    } catch (error) {
+      setMessage(error.message || 'Unable to save the salon location.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const hasSavedLocation = isValidCoordinates(locationQuery.data?.latitude, locationQuery.data?.longitude)
+
+  return (
+    <section className="space-y-5">
+      <div className="rounded-[28px] bg-[#0b1220] p-6 text-white shadow-xl">
+        <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#d9b78c]">Salon settings</p>
+        <h2 className="mt-2 text-2xl font-black">Salon Location</h2>
+        <p className="mt-2 max-w-2xl text-sm text-slate-300">Set a salon address and coordinates so customers can opt in to an approximate journey reminder.</p>
+      </div>
+      {locationQuery.isLoading && <p className="rounded-2xl bg-white p-4 text-sm text-slate-500">Loading salon location...</p>}
+      {locationQuery.isError && <p className="rounded-2xl bg-rose-50 p-4 text-sm text-rose-700">{locationQuery.error.message}</p>}
+      {!locationQuery.isError && (
+        <form onSubmit={saveLocation} className="space-y-5 rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
+          {hasSavedLocation ? (
+            <div className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-900">
+              <p className="font-bold">Saved salon location</p>
+              <p className="mt-1">{locationQuery.data.location_description || locationQuery.data.address_line1}</p>
+              <p className="mt-1 font-mono">{locationQuery.data.latitude}, {locationQuery.data.longitude}</p>
+              <p className="mt-1 text-xs text-emerald-800">
+                Source: {locationQuery.data.location_source || 'Previously saved'}
+                {locationQuery.data.location_updated_at
+                  ? ` • Updated ${new Date(locationQuery.data.location_updated_at).toLocaleString('en-IN')}`
+                  : ''}
+              </p>
+            </div>
+          ) : (
+            <p className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900">Salon location has not been configured. Smart travel reminders are currently unavailable.</p>
+          )}
+          <div className="flex flex-wrap gap-3">
+            <button type="button" onClick={detectLocation} disabled={locating || !salonId} className="inline-flex items-center gap-2 rounded-full bg-[#0b1220] px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">
+              <LocateFixed size={16} /> {locating ? 'Getting location...' : 'Use Current Location'}
+            </button>
+            {gpsCandidate && !gpsConfirmed && <button type="button" onClick={confirmDetectedLocation} className="rounded-full border border-emerald-300 px-4 py-2.5 text-sm font-bold text-emerald-800">Confirm detected location</button>}
+          </div>
+          {gpsCandidate && (
+            <div className="rounded-2xl border border-[#d9b78c]/50 bg-[#fffaf2] p-4 text-sm text-slate-800">
+              <p className="font-bold">{gpsConfirmed ? 'GPS location confirmed' : 'Review detected GPS location'}</p>
+              <p className="mt-1 font-mono">{Number(gpsCandidate.latitude).toFixed(6)}, {Number(gpsCandidate.longitude).toFixed(6)}</p>
+              <p className="mt-1">Accuracy: {Math.round(gpsCandidate.accuracy)} m</p>
+            </div>
+          )}
+          <label className="block text-sm font-semibold text-slate-700">
+            Salon address or location description
+            <input value={form.location_description} onChange={(event) => updateManualField('location_description', event.target.value)} placeholder="Street address or nearby landmark" className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 font-normal" />
+          </label>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="block text-sm font-semibold text-slate-700">
+              Latitude
+              <input inputMode="decimal" value={form.latitude} onChange={(event) => updateManualField('latitude', event.target.value)} placeholder="-90 to 90" className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 font-mono font-normal" />
+            </label>
+            <label className="block text-sm font-semibold text-slate-700">
+              Longitude
+              <input inputMode="decimal" value={form.longitude} onChange={(event) => updateManualField('longitude', event.target.value)} placeholder="-180 to 180" className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 font-mono font-normal" />
+            </label>
+          </div>
+          {message && <p role="status" className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">{message}</p>}
+          <div className="flex justify-end"><PrimaryButton type="submit" disabled={saving || locationQuery.isLoading}>{saving ? 'Saving...' : 'Save salon location'}</PrimaryButton></div>
+        </form>
+      )}
+    </section>
+  )
+}
+
 function SalonFloor({ salonId }) {
   const queryClient = useQueryClient()
   const [walkInOpen, setWalkInOpen] = useState(false)
@@ -1839,6 +2104,7 @@ function SalonFloor({ salonId }) {
   const [actionError, setActionError] = useState('')
   const [actionMessage, setActionMessage] = useState('')
   const [busyAction, setBusyAction] = useState('')
+  const [refreshingFloor, setRefreshingFloor] = useState(false)
   const floorQuery = useQuery({
     queryKey: ['salon-floor', salonId],
     enabled: Boolean(salonId && isSupabaseConfigured),
@@ -1893,6 +2159,21 @@ function SalonFloor({ salonId }) {
       floorQuery.refetch()
     }
   }
+  const refreshFloor = async () => {
+    setRefreshingFloor(true)
+    setActionError('')
+    setActionMessage('')
+    try {
+      const { error } = await supabase.rpc('expire_overdue_queue_entries')
+      if (error) throw new Error(error.message)
+      const result = await floorQuery.refetch()
+      if (result.error) throw result.error
+    } catch (error) {
+      setActionError(error.message || 'Unable to refresh the waiting queue.')
+    } finally {
+      setRefreshingFloor(false)
+    }
+  }
   const serviceName = (entry) => entry.booking?.booking_items?.map((item) => item.service_name_snapshot).join(', ') || 'Service'
 
   return (
@@ -1936,7 +2217,7 @@ function SalonFloor({ salonId }) {
         })}
       </div>
       <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="mb-4 flex items-center justify-between"><div><h3 className="text-xl font-black">Unified waiting queue</h3><p className="text-sm text-slate-500">Online appointments and walk-ins, ordered by queue number.</p></div><button type="button" onClick={() => floorQuery.refetch()} className="rounded-full border p-2 text-slate-500" aria-label="Refresh floor"><RefreshCw size={16} /></button></div>
+        <div className="mb-4 flex items-center justify-between"><div><h3 className="text-xl font-black">Unified waiting queue</h3><p className="text-sm text-slate-500">Online appointments and walk-ins, ordered by queue number.</p></div><button type="button" onClick={refreshFloor} disabled={refreshingFloor} className="inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50" aria-label="Refresh waiting queue"><RefreshCw size={16} className={refreshingFloor ? 'animate-spin' : ''} />{refreshingFloor ? 'Refreshing...' : 'Refresh'}</button></div>
         <div className="space-y-2">{waiting.map((entry) => <div key={entry.id} className="flex flex-col gap-3 rounded-2xl bg-slate-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div><span className="rounded-full bg-slate-900 px-2 py-1 text-[10px] font-bold text-white">{entry.booking?.booking_type === 'WALK_IN' ? 'WALK-IN' : 'ONLINE'}</span><p className="mt-2 font-semibold">{serviceName(entry)}</p><p className="mt-1 text-sm text-slate-500">{entry.booking?.booking_staff?.[0]?.employee?.employee_name || 'Unassigned'}</p></div><div className="text-left sm:text-right"><p className="font-bold">Queue {entry.queue_number}</p><p className="text-xs text-slate-500">Estimated wait: {entry.estimated_wait_minutes ?? 'calculating'} min</p><div className="mt-2 flex flex-wrap justify-end gap-2">{!entry.booking?.booking_staff?.length && <><select value={assignmentChoice[entry.booking_id] || ''} onChange={(event) => setAssignmentChoice((current) => ({ ...current, [entry.booking_id]: event.target.value }))} className="rounded-full border bg-white px-2 py-1 text-xs"><option value="">Assign barber</option>{availableBarbers.map((employee) => <option key={employee.id} value={employee.id}>{employee.employee_name}</option>)}</select><button type="button" disabled={!assignmentChoice[entry.booking_id]} onClick={() => runAction('Assign customer', 'assign_waiting_customer', { p_booking_id: entry.booking_id, p_employee_id: assignmentChoice[entry.booking_id] })} className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white disabled:opacity-40">Assign</button></>}<button type="button" onClick={() => runAction('Cancel booking', 'cancel_walkin_booking', { p_booking_id: entry.booking_id })} className="rounded-full px-2 py-1 text-xs font-semibold text-rose-600">Cancel</button></div></div></div>)}</div>
         {waiting.length === 0 && !floorQuery.isLoading && <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">No customers are waiting.</p>}
       </div>
@@ -1979,6 +2260,7 @@ function AdminDashboard({ onLogout }) {
   const [activeSection, setActiveSection] = useState('Handle Offline')
   const [menuOpen, setMenuOpen] = useState(false)
   const [selectedSalonId, setSelectedSalonId] = useState('')
+  const menuRef = useDismissableMenu(menuOpen, setMenuOpen)
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const logout = async () => {
@@ -2060,22 +2342,29 @@ function AdminDashboard({ onLogout }) {
             <p className="text-lg font-black tracking-[-0.06em]">BOOKSALOON</p>
             <p className="mt-1 text-[10px] uppercase tracking-[0.18em] text-slate-400">Admin workspace</p>
           </div>
-          <div className="relative">
+          <div ref={menuRef} className="relative">
             <button
               type="button"
               onClick={() => setMenuOpen((open) => !open)}
               aria-expanded={menuOpen}
               aria-haspopup="menu"
+              aria-controls="admin-navigation-menu"
               className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/15"
             >
-              <Menu size={17} /> Menu
+              {menuOpen ? <X size={17} /> : <Menu size={17} />} Menu
             </button>
-            {menuOpen && (
-              <nav
-                aria-label="Admin menu"
-                className="absolute right-0 mt-3 grid w-64 gap-1 rounded-2xl border border-slate-200 bg-white p-2 text-sm text-slate-700 shadow-2xl"
-              >
-                {['Dashboard', 'Handle Offline', 'Services & Pricing', 'Staff Management', 'Business Hours', 'Waiting Time Settings', 'Appointments', 'Notifications', 'Settings'].map((item) => (
+            <AnimatePresence>
+              {menuOpen && (
+                <motion.nav
+                  id="admin-navigation-menu"
+                  aria-label="Admin menu"
+                  initial={{ opacity: 0, y: -16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, x: 32 }}
+                  transition={{ duration: 0.2, ease: 'easeOut' }}
+                  className="absolute right-0 mt-3 grid w-64 origin-top-right gap-1 rounded-2xl border border-slate-200 bg-white p-2 text-sm text-slate-700 shadow-2xl"
+                >
+                {['Dashboard', 'Handle Offline', 'Services & Pricing', 'Staff Management', 'Business Hours', 'Salon Location', 'Waiting Time Settings', 'Appointments', 'Notifications', 'Settings'].map((item) => (
                   <button
                     key={item}
                     type="button"
@@ -2091,8 +2380,9 @@ function AdminDashboard({ onLogout }) {
                 <button type="button" onClick={logout} className="mt-1 inline-flex items-center gap-2 rounded-xl border-t border-slate-200 px-3 py-3 text-left text-slate-500 hover:bg-slate-100">
                   <LogOut size={15} /> Logout
                 </button>
-              </nav>
-            )}
+                </motion.nav>
+              )}
+            </AnimatePresence>
           </div>
         </div>
       </header>
@@ -2109,6 +2399,8 @@ function AdminDashboard({ onLogout }) {
 
         {activeSection === 'Handle Offline' ? (
           <SalonFloor salonId={selectedSalonId} />
+        ) : activeSection === 'Salon Location' ? (
+          <SalonLocationSettings salonId={selectedSalonId} />
         ) : activeSection === 'Dashboard' ? (
           <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_20px_40px_rgba(15,23,42,0.04)]">
             <div className="mb-4 flex items-center justify-between">
@@ -2329,13 +2621,7 @@ function CustomerApp({ user, onLogout }) {
   const [profile, setProfile] = useState(user)
 
   const clearBookings = () => {
-    const key = `booksaloon-hidden-bookings-${profile.id}`
-    const previous = JSON.parse(localStorage.getItem(key) || '[]')
-    const hiddenIds = new Set(previous)
-    userBookings.forEach((booking) => {
-      if (booking.bookingId) hiddenIds.add(booking.bookingId)
-    })
-    localStorage.setItem(key, JSON.stringify([...hiddenIds]))
+    clearCustomerBookingHistory(profile.id, userBookings)
     setUserBookings([])
   }
 
@@ -2356,7 +2642,7 @@ function CustomerApp({ user, onLogout }) {
           .maybeSingle()
         const { data: bookingData, error: bookingError } = await supabase
           .from('bookings')
-          .select('id, booking_number, status, scheduled_start, total_paise, salon:salons(name), booking_items(service_name_snapshot), booking_staff(employee:employees(employee_name))')
+          .select('id, booking_number, status, scheduled_start, created_at, total_paise, salon:salons(name), booking_items(service_name_snapshot), booking_staff(employee:employees(employee_name))')
           .eq('customer_id', authData.user.id)
           .order('created_at', { ascending: false })
         if (profileError) console.error('Unable to load customer profile:', profileError)
@@ -2372,8 +2658,7 @@ function CustomerApp({ user, onLogout }) {
           }))
         }
         if (active && Array.isArray(bookingData)) {
-          const hiddenIds = new Set(JSON.parse(localStorage.getItem(`booksaloon-hidden-bookings-${authData.user.id}`) || '[]'))
-          setUserBookings(bookingData.filter((booking) => !hiddenIds.has(booking.id)).map((booking) => ({
+          setUserBookings(filterCustomerBookingHistory(authData.user.id, bookingData).map((booking) => ({
             id: booking.booking_number || booking.id,
             bookingId: booking.id,
             service: Array.isArray(booking.booking_items)
@@ -2428,9 +2713,20 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true)
 
   useEffect(() => {
-    requestAndroidNotificationPermission().catch((error) => {
-      console.error('Unable to request Android notification permission:', error)
-    })
+    const requestStartupPermissions = async () => {
+      if (!window.Capacitor?.isNativePlatform?.()) return
+      try {
+        await requestForegroundLocationPermission({ isNative: true })
+      } catch (error) {
+        console.error('Unable to request Android location permission:', error)
+      }
+      try {
+        await requestAndroidNotificationPermission()
+      } catch (error) {
+        console.error('Unable to request Android notification permission:', error)
+      }
+    }
+    requestStartupPermissions()
   }, [])
 
   useEffect(() => {

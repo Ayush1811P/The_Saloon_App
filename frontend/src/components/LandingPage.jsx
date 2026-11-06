@@ -465,6 +465,7 @@ function FinalCta({ go }) {
 
 export default function LandingPage() {
   const navigate = useNavigate()
+  const isNativeApp = typeof window !== 'undefined' && Boolean(window.Capacitor?.isNativePlatform?.())
   const [, setAdminClickCount] = useState(0)
   const { scrollYProgress } = useScroll()
   const progress = useSpring(scrollYProgress, { stiffness: 120, damping: 25 })
@@ -498,11 +499,19 @@ export default function LandingPage() {
           <FinalCta go={go} />
         </main>
 
-        <section aria-label="Mobile app download" className="bg-cream px-5 pb-12 lg:px-8">
-          <div className="mx-auto flex max-w-7xl justify-center">
-            <GoldButton>Download our app <Download size={16} /></GoldButton>
-          </div>
-        </section>
+        {!isNativeApp && (
+          <section aria-label="Mobile app download" className="bg-cream px-5 pb-12 lg:px-8">
+            <div className="mx-auto flex max-w-7xl justify-center">
+              <a
+                href="/downloads/The%20Sallon%20app.apk"
+                download="The Sallon app.apk"
+                className="group inline-flex items-center justify-center gap-2 rounded-full bg-gold px-6 py-3.5 text-sm font-bold text-ink shadow-[0_12px_30px_rgba(217,183,140,0.25)] transition duration-300 hover:-translate-y-0.5 hover:bg-[#e9d2b0] hover:shadow-[0_16px_36px_rgba(217,183,140,0.4)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gold"
+              >
+                Download our app <Download size={16} />
+              </a>
+            </div>
+          </section>
+        )}
 
         <footer className="bg-ink px-5 py-12 text-slate-400 lg:px-8">
           <div className="mx-auto grid max-w-7xl gap-10 sm:grid-cols-2 md:grid-cols-[1.4fr_1fr_1fr]">

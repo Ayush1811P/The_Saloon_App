@@ -9,7 +9,7 @@ export async function getLiveQueueBooking(bookingId, userId) {
       customer_name_snapshot, customer_phone_snapshot,
       booking:bookings(
         booking_number, booking_type, status, scheduled_start, actual_start, actual_end,
-        salon:salons(id, name, city, timezone),
+        salon:salons(id, name, city, timezone, address_line1, location_description, location_source, latitude, longitude),
         booking_items(service_name_snapshot, duration_minutes),
         booking_staff(start_at, end_at, employee:employees(employee_name))
       )

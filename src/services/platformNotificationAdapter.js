@@ -70,6 +70,85 @@ export async function showCurrentStatusNotification({ title, body, bookingId }) 
   }
 }
 
+export async function requestLeaveReminderNotificationPermission() {
+  if (getNotificationPlatform() === 'ANDROID') {
+    const { LocalNotifications } = await import('@capacitor/local-notifications')
+    let permission = await LocalNotifications.checkPermissions()
+    if (permission.display === 'prompt' || permission.display === 'prompt-with-rationale') {
+      permission = await LocalNotifications.requestPermissions()
+    }
+    return { supported: true, granted: permission.display === 'granted' }
+  }
+  if (typeof Notification === 'undefined') return { supported: false, granted: false }
+  const permission = Notification.permission === 'default'
+    ? await Notification.requestPermission()
+    : Notification.permission
+  return { supported: true, granted: permission === 'granted' }
+}
+
+export async function getLeaveReminderNotificationState(notificationId) {
+  if (getNotificationPlatform() !== 'ANDROID') return { supported: false }
+  const { LocalNotifications } = await import('@capacitor/local-notifications')
+  const [scheduled, triggered] = await Promise.all([
+    LocalNotifications.getAll({ state: 'SCHEDULED' }),
+    LocalNotifications.getAll({ state: 'TRIGGERED' }),
+  ])
+  return {
+    supported: true,
+    scheduled: scheduled.notifications.find((notification) => notification.id === notificationId) || null,
+    triggered: triggered.notifications.some((notification) => notification.id === notificationId),
+  }
+}
+
+export async function scheduleLeaveReminderNotification({ id, title, body, at, bookingId }) {
+  if (getNotificationPlatform() !== 'ANDROID') return { supported: false }
+  const { LocalNotifications } = await import('@capacitor/local-notifications')
+  const permission = await LocalNotifications.checkPermissions()
+  if (permission.display !== 'granted') return { supported: true, granted: false }
+  const current = await getLeaveReminderNotificationState(id)
+  if (current.triggered) return { supported: true, triggered: true, scheduled: true }
+  const scheduledAt = current.scheduled?.schedule?.at
+  if (scheduledAt && new Date(scheduledAt).getTime() === at.getTime()) {
+    return { supported: true, scheduled: true }
+  }
+  if (current.scheduled) await LocalNotifications.cancel({ notifications: [{ id }] })
+  const result = await LocalNotifications.schedule({
+    notifications: [{
+      id,
+      title,
+      body,
+      schedule: { at, allowWhileIdle: true },
+      isExactNotification: false,
+      extra: { bookingId, url: `/customer/queue/${bookingId}` },
+      autoCancel: true,
+    }],
+  })
+  return { supported: true, granted: true, scheduled: true, warning: result.warning?.message }
+}
+
+export async function cancelLeaveReminderNotification(id) {
+  if (getNotificationPlatform() !== 'ANDROID') return { supported: false }
+  const { LocalNotifications } = await import('@capacitor/local-notifications')
+  const state = await getLeaveReminderNotificationState(id)
+  if (state.scheduled) await LocalNotifications.cancel({ notifications: [{ id }] })
+  if (state.triggered) await LocalNotifications.removeDeliveredNotificationsById({ ids: [id] })
+  return { supported: true }
+}
+
+export async function showLeaveReminderNotification({ id, title, body, bookingId }) {
+  if (getNotificationPlatform() !== 'WEB') return { supported: false }
+  if (typeof document === 'undefined' || document.visibilityState !== 'visible'
+      || Notification.permission !== 'granted') {
+    return { supported: false, reason: 'The queue page is not active or notification permission is unavailable.' }
+  }
+  const notification = new Notification(title, {
+    body,
+    tag: `booksaloon-leave-${id}`,
+    data: { bookingId, url: `/customer/queue/${bookingId}` },
+  })
+  return { supported: true, notification }
+}
+
 export async function registerAndroidDevice({ token, userAgent }) {
   if (!token) throw new Error('FCM token is required.')
   const deviceId = localStorage.getItem('booksaloon-device-id')

@@ -1,11 +1,38 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Bell, WifiOff } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Bell, MapPin, WifiOff } from 'lucide-react'
 import { getLiveQueueBooking, getProgressPercent, getRemainingMinutes, subscribeToQueueBooking } from '../../services/queueTrackerService'
 import { registerWebDevice, requestWebNotifications } from '../../services/notificationService'
-import { initializeAndroidNotifications, publishQueueNotification, requestAndroidNotificationPermission, showCurrentStatusNotification } from '../../services/platformNotificationAdapter'
+import {
+  cancelLeaveReminderNotification,
+  getLeaveReminderNotificationState,
+  initializeAndroidNotifications,
+  publishQueueNotification,
+  requestAndroidNotificationPermission,
+  requestLeaveReminderNotificationPermission,
+  scheduleLeaveReminderNotification,
+  showCurrentStatusNotification,
+  showLeaveReminderNotification,
+} from '../../services/platformNotificationAdapter'
+import {
+  SMART_LEAVE_CONFIG,
+  clearTravelEstimate,
+  createReminderPlan,
+  createTravelEstimate,
+  getLeaveReminderNotificationId,
+  getOneTimeLocation,
+  readTravelEstimate,
+  reconcileSmartLeaveReminder,
+  saveTravelEstimate,
+} from '../../services/smartLeaveReminder'
 
 function statusLabel(status) {
   return { WAITING: 'Waiting in queue', CALLED: 'Your turn is next', SERVING: 'Service in progress', COMPLETED: 'Service completed', CANCELLED: 'Appointment cancelled' }[status] || status
+}
+
+function formatTime(value) {
+  if (!value) return 'Unavailable'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? 'Unavailable' : date.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })
 }
 
 export default function LiveQueueTracker({ bookingId, userId }) {
@@ -16,6 +43,10 @@ export default function LiveQueueTracker({ bookingId, userId }) {
   const [enablingNotifications, setEnablingNotifications] = useState(false)
   const [offline, setOffline] = useState(!navigator.onLine)
   const [now, setNow] = useState(Date.now())
+  const [travelEstimate, setTravelEstimate] = useState(() => readTravelEstimate(bookingId))
+  const [smartLeaveMessage, setSmartLeaveMessage] = useState('')
+  const [smartLeaveStatus, setSmartLeaveStatus] = useState('')
+  const smartLeaveWork = useRef(Promise.resolve())
 
   const load = async () => {
     try {
@@ -50,6 +81,126 @@ export default function LiveQueueTracker({ bookingId, userId }) {
   const salon = entry?.booking?.salon
   const service = entry?.booking?.booking_items?.map((item) => item.service_name_snapshot).join(', ')
   const barber = entry?.booking?.booking_staff?.[0]?.employee?.employee_name
+  const journeyPlan = travelEstimate && entry?.estimated_start_at
+    ? createReminderPlan(entry.estimated_start_at, travelEstimate.travelMinutes, now)
+    : null
+
+  useEffect(() => {
+    setTravelEstimate(readTravelEstimate(bookingId))
+    setSmartLeaveMessage('')
+    setSmartLeaveStatus('')
+  }, [bookingId])
+
+  const enableSmartLeaveReminder = async () => {
+    setSmartLeaveMessage('')
+    setSmartLeaveStatus('')
+    if (!entry || ['CANCELLED', 'COMPLETED', 'SERVING'].includes(entry.status)
+        || ['CANCELLED', 'COMPLETED', 'IN_PROGRESS'].includes(entry.booking?.status)) {
+      setSmartLeaveMessage('A current active booking is required to enable this reminder.')
+      return
+    }
+    if (!salon || salon.latitude == null || salon.longitude == null) {
+      setSmartLeaveMessage('Salon location has not been configured. Smart travel reminders are currently unavailable.')
+      return
+    }
+    try {
+      const position = await getOneTimeLocation({
+        isNative: Boolean(window.Capacitor?.isNativePlatform?.()),
+      })
+      const estimate = createTravelEstimate(position, salon, position.timestamp || Date.now())
+      let permission
+      try {
+        permission = await requestLeaveReminderNotificationPermission()
+      } catch (permissionError) {
+        setSmartLeaveMessage(`Notifications could not be enabled: ${permissionError.message}`)
+      }
+      const saved = saveTravelEstimate(bookingId, estimate, salon)
+      setTravelEstimate(saved)
+      setSmartLeaveMessage(permission?.granted
+        ? 'Travel estimate saved on this device. Your reminder will follow the live queue countdown.'
+        : permission
+          ? 'Travel estimate saved. Notifications are disabled, but the leave reminder will appear on this screen while it is open.'
+          : 'Travel estimate saved. Notifications could not be enabled, but the leave reminder will appear on this screen while it is open.')
+    } catch (locationError) {
+      setSmartLeaveMessage(locationError.message || 'Unable to enable the travel reminder. You can continue using your booking.')
+    }
+  }
+
+  const disableSmartLeaveReminder = async () => {
+    try {
+      await cancelLeaveReminderNotification(getLeaveReminderNotificationId(bookingId))
+      clearTravelEstimate(bookingId)
+      setTravelEstimate(null)
+      setSmartLeaveStatus('')
+      setSmartLeaveMessage('Smart Leave Reminder disabled. The saved travel estimate was cleared.')
+    } catch (disableError) {
+      setSmartLeaveMessage(`Unable to cancel the pending notification: ${disableError.message}`)
+    }
+  }
+
+  useEffect(() => {
+    if (loading || error) return undefined
+    let active = true
+    const reconcile = async () => {
+      const native = Boolean(window.Capacitor?.isNativePlatform?.())
+      const notificationId = getLeaveReminderNotificationId(bookingId)
+      if (!entry) {
+        await cancelLeaveReminderNotification(notificationId)
+        clearTravelEstimate(bookingId)
+        if (active) {
+          setTravelEstimate(null)
+          setSmartLeaveStatus('')
+        }
+        return
+      }
+      const bookingStatus = String(entry.booking?.status || '').toUpperCase()
+      const queueStatus = String(entry.status || '').toUpperCase()
+      const currentStatus = ['CANCELLED', 'COMPLETED', 'IN_PROGRESS'].includes(bookingStatus)
+        ? bookingStatus
+        : queueStatus
+      const result = await reconcileSmartLeaveReminder({
+        bookingId,
+        status: currentStatus,
+        expectedStartAt: entry.estimated_start_at,
+        now,
+        native,
+        notifications: {
+          cancel: cancelLeaveReminderNotification,
+          getState: getLeaveReminderNotificationState,
+          schedule: scheduleLeaveReminderNotification,
+          show: showLeaveReminderNotification,
+        },
+      })
+      if (!active) return
+      setTravelEstimate((current) => current?.savedAt === result.estimate?.savedAt
+        && current?.reminderSentAt === result.estimate?.reminderSentAt
+        ? current
+        : result.estimate)
+      setSmartLeaveStatus(result.status)
+      if (result.status === 'cleared') {
+        setSmartLeaveMessage(`The reminder was cleared because this booking is ${result.reason}.`)
+      } else if (result.status === 'notification-unavailable') {
+        setSmartLeaveMessage('Notification permission is unavailable. The leave reminder will still appear on this screen while it is open.')
+      } else if (result.status === 'unavailable') {
+        setSmartLeaveMessage('The queue estimate is unavailable. The reminder will update when a start time is available.')
+      }
+    }
+
+    smartLeaveWork.current = smartLeaveWork.current
+      .catch(() => {})
+      .then(async () => {
+        if (!active) return
+        try {
+          await reconcile()
+        } catch (reconcileError) {
+          if (active) {
+            setSmartLeaveStatus('error')
+            setSmartLeaveMessage(`Unable to update the leave reminder: ${reconcileError.message}`)
+          }
+        }
+      })
+    return () => { active = false }
+  }, [bookingId, entry, error, loading, now, travelEstimate])
 
   const enableNotifications = async () => {
     setEnablingNotifications(true)
@@ -132,6 +283,54 @@ export default function LiveQueueTracker({ bookingId, userId }) {
         <div className="mt-5 grid gap-3 sm:grid-cols-2"><div><p className="text-xs text-slate-400">Assigned barber</p><p className="font-semibold">{barber || 'To be assigned'}</p></div><div><p className="text-xs text-slate-400">Last updated</p><p className="font-semibold">{new Date(entry.created_at).toLocaleString('en-IN')}</p></div></div>
         <button type="button" onClick={enableNotifications} disabled={enablingNotifications} className="mt-5 inline-flex items-center gap-2 rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold disabled:opacity-50"><Bell size={16} /> {enablingNotifications ? 'Enabling...' : 'Enable notifications'}</button>
         {notificationMessage && <p role="status" className="mt-3 text-sm text-slate-600">{notificationMessage}</p>}
+      </div>
+      <div className="rounded-[24px] border border-[#d9b78c]/50 bg-[#0b1220] p-5 text-white shadow-lg sm:p-6">
+        <div className="flex items-start gap-3">
+          <span className="rounded-2xl bg-[#d9b78c]/15 p-3 text-[#d9b78c]"><MapPin size={20} /></span>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#d9b78c]">Your Journey to The Saloon</p>
+            <h2 className="mt-1 text-xl font-black">Smart Leave Reminder</h2>
+            <p className="mt-2 text-sm text-slate-300">Allow The Saloon to estimate your journey and remind you when it's time to leave. Your location is captured once and only an approximate travel estimate is saved on this device.</p>
+          </div>
+        </div>
+        {(!salon || salon.latitude == null || salon.longitude == null) ? (
+          <p className="mt-5 rounded-2xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-100">Salon location has not been configured. Smart travel reminders are currently unavailable.</p>
+        ) : (
+          <>
+            <p className="mt-4 text-sm font-semibold text-slate-100">{salon.location_description || salon.address_line1 || salon.name || 'Salon location saved'}</p>
+            {travelEstimate ? (
+              <>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-2xl bg-white/5 p-4"><p className="text-xs text-slate-400">Approximate distance</p><p className="mt-1 text-lg font-bold">{travelEstimate.straightLineDistanceKm.toFixed(1)} km</p></div>
+                  <div className="rounded-2xl bg-white/5 p-4"><p className="text-xs text-slate-400">Approximate bike travel time</p><p className="mt-1 text-lg font-bold">{travelEstimate.travelMinutes} min</p></div>
+                  <div className="rounded-2xl bg-white/5 p-4"><p className="text-xs text-slate-400">Appointment expected</p><p className="mt-1 font-bold">{formatTime(entry.estimated_start_at)}</p></div>
+                  <div className="rounded-2xl bg-white/5 p-4"><p className="text-xs text-slate-400">Time remaining</p><p className="mt-1 font-bold">{remaining == null ? 'Estimate unavailable' : `${remaining} min`}</p></div>
+                  <div className="rounded-2xl bg-white/5 p-4"><p className="text-xs text-slate-400">Preparation buffer</p><p className="mt-1 font-bold">{SMART_LEAVE_CONFIG.preparationBufferMinutes} min</p></div>
+                  <div className="rounded-2xl bg-white/5 p-4"><p className="text-xs text-slate-400">Leave by</p><p className="mt-1 font-bold text-[#d9b78c]">{journeyPlan?.due ? 'Leave now' : journeyPlan ? formatTime(journeyPlan.leaveAt) : 'Estimate unavailable'}</p></div>
+                </div>
+                <p className={`mt-4 rounded-2xl p-4 text-sm font-semibold ${journeyPlan?.due ? 'bg-[#d9b78c] text-[#0b1220]' : 'bg-white/5 text-slate-100'}`} role={journeyPlan?.due ? 'alert' : 'status'}>
+                  {journeyPlan?.due
+                    ? "It's time to leave now!"
+                    : smartLeaveStatus === 'sent'
+                      ? 'Your leave reminder has already been sent for this booking.'
+                      : journeyPlan
+                        ? smartLeaveStatus === 'scheduled'
+                          ? 'Your leave reminder is scheduled.'
+                          : 'Your leave reminder will follow the live queue estimate.'
+                        : 'The queue estimate is unavailable. The reminder will update when a start time is available.'}
+                </p>
+                <p className="mt-3 text-xs leading-relaxed text-slate-400">Travel time is an estimate based on distance and average speed. Actual journey time may vary due to traffic and road conditions.</p>
+                <p className="mt-2 text-xs text-slate-500">Location accuracy: ±{Math.round(travelEstimate.accuracyMeters)} m • Captured {new Date(travelEstimate.capturedAt).toLocaleString('en-IN')}</p>
+                <button type="button" onClick={disableSmartLeaveReminder} className="mt-4 rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/10">Disable Smart Leave Reminder</button>
+              </>
+            ) : (
+              <button type="button" onClick={enableSmartLeaveReminder} className="mt-5 inline-flex items-center gap-2 rounded-full bg-[#d9b78c] px-5 py-3 text-sm font-black text-[#0b1220]">
+                <MapPin size={16} /> Enable Smart Leave Reminder
+              </button>
+            )}
+          </>
+        )}
+        {smartLeaveMessage && <p role="status" className="mt-3 rounded-2xl bg-white/10 p-3 text-sm text-slate-200">{smartLeaveMessage}</p>}
       </div>
     </section>
   )
