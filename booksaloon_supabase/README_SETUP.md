@@ -48,10 +48,12 @@ first. Apply the numbered files in order:
 19. `019_smart_leave_reminder_location.sql`
 20. `020_booking_location_and_notification_clear_fixes.sql`
 21. `021_admin_clear_appointments.sql`
+22. `022_single_active_booking_travel_reminders.sql`
+23. `023_customer_notification_clear.sql`
 
-For an existing installation at version 018, apply migrations 019, 020, and
-021. At version 019, apply migrations 020 and 021; at version 020, apply
-migration 021. Do not run
+For an existing installation at version 022, apply migration 023. Migration
+022 stops with an explicit error if a customer already has multiple active
+bookings; resolve those bookings with the salon owner before retrying. Do not run
 `BOOKSALOON_ALL_MIGRATIONS.sql` on an existing database; doing so can replay
 schema changes.
 
@@ -85,6 +87,10 @@ in the database.
   administrators. Admin clear removes unread and read rows.
 - **021:** adds an authorized admin RPC to permanently clear appointments for
   the selected salon, including related queue and booking records.
+- **022:** enforces one active booking per customer and adds scheduled travel
+  reminder notifications.
+- **023:** refreshes the customer notification-clear RPC and adds a
+  customer-owned RLS deletion fallback.
 
 ## 3. Configure Supabase Auth
 
@@ -197,8 +203,10 @@ supabase functions deploy dispatch-queue-notifications
 The dispatcher claims events through the service-role-only
 `claim_queue_notification_events(integer, integer)` RPC. Migration 016 uses
 leases and `FOR UPDATE SKIP LOCKED` to avoid concurrent duplicate claims,
-tracks per-device attempts, and supports bounded retries. Delivery respects
-user platform and notification-category preferences. Configure
+tracks per-device attempts, and supports bounded retries. Migration 022 adds
+scheduled travel-reminder events; run the dispatcher on a recurring schedule
+(for example, once per minute) so reminders are sent at their due time. Delivery
+respects user platform and notification-category preferences. Configure
 `DISPATCHER_ALLOWED_ORIGIN` to the exact trusted frontend origin.
 
 ## 7. Data access and security notes

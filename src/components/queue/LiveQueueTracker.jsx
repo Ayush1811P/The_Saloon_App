@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Bell, MapPin, WifiOff } from 'lucide-react'
 import { getLiveQueueBooking, getProgressPercent, getRemainingMinutes, subscribeToQueueBooking } from '../../services/queueTrackerService'
+import { combineLocationAddress, createGoogleMapsDirectionsUrl, reverseGeocodeLocation } from '../../services/addressSearch'
+import { getAvailableRideApps, openRideApp } from '../../services/rideBooking'
+import { supabase } from '../../lib/supabase'
 import { registerWebDevice, requestWebNotifications } from '../../services/notificationService'
 import {
   cancelLeaveReminderNotification,
@@ -44,9 +47,17 @@ export default function LiveQueueTracker({ bookingId, userId }) {
   const [offline, setOffline] = useState(!navigator.onLine)
   const [now, setNow] = useState(Date.now())
   const [travelEstimate, setTravelEstimate] = useState(() => readTravelEstimate(bookingId))
+  const [userLocation, setUserLocation] = useState(null)
+  const [userLocationAddress, setUserLocationAddress] = useState('')
+  const [locatingUser, setLocatingUser] = useState(false)
+  const [rideApps, setRideApps] = useState([])
+  const [rideAppsOpen, setRideAppsOpen] = useState(false)
+  const [rideAppsLoading, setRideAppsLoading] = useState(false)
+  const [rideAppsError, setRideAppsError] = useState('')
   const [smartLeaveMessage, setSmartLeaveMessage] = useState('')
   const [smartLeaveStatus, setSmartLeaveStatus] = useState('')
   const smartLeaveWork = useRef(Promise.resolve())
+  const autoLocationBooking = useRef('')
 
   const load = async () => {
     try {
@@ -78,53 +89,134 @@ export default function LiveQueueTracker({ bookingId, userId }) {
 
   const remaining = useMemo(() => entry ? getRemainingMinutes(entry.estimated_start_at) : null, [entry, now])
   const progress = entry ? getProgressPercent(entry, now) : 0
-  const salon = entry?.booking?.salon
+  const salonId = entry?.booking?.salon?.id
+  const salonName = entry?.booking?.salon?.name
+  const salonCity = entry?.booking?.salon?.city
+  const salonAddress = entry?.booking?.salon?.address_line1
+  const salonLocationDescription = entry?.booking?.salon?.location_description
+  const salonLatitude = entry?.booking?.salon?.latitude
+  const salonLongitude = entry?.booking?.salon?.longitude
+  const salon = useMemo(() => salonId ? {
+    id: salonId,
+    name: salonName,
+    city: salonCity,
+    address_line1: salonAddress,
+    location_description: salonLocationDescription,
+    latitude: salonLatitude,
+    longitude: salonLongitude,
+  } : null, [salonId, salonName, salonCity, salonAddress, salonLocationDescription, salonLatitude, salonLongitude])
+  const queueEntryStatus = entry?.status
+  const bookingStatus = entry?.booking?.status
+  const expectedStartAt = entry?.estimated_start_at
+  const hasQueueEntry = Boolean(entry)
+  const hasTravelEstimate = Boolean(travelEstimate)
+  const travelMinutes = travelEstimate?.travelMinutes
   const service = entry?.booking?.booking_items?.map((item) => item.service_name_snapshot).join(', ')
   const barber = entry?.booking?.booking_staff?.[0]?.employee?.employee_name
   const journeyPlan = travelEstimate && entry?.estimated_start_at
     ? createReminderPlan(entry.estimated_start_at, travelEstimate.travelMinutes, now)
     : null
+  const directionsUrl = createGoogleMapsDirectionsUrl(salon, userLocation)
+  const locationAccessEnabled = globalThis.localStorage?.getItem(`booksaloon-location-enabled:${userId}`) === 'true'
+
+  const captureCurrentLocation = useCallback(async () => {
+    setLocatingUser(true)
+    setSmartLeaveMessage('')
+    try {
+      if (!salon || salon.latitude == null || salon.longitude == null) {
+        throw new Error('The salon address is not available yet.')
+      }
+      const position = await getOneTimeLocation({ isNative: Boolean(window.Capacitor?.isNativePlatform?.()) })
+      const estimate = createTravelEstimate(position, salon, position.timestamp || Date.now())
+      const saved = saveTravelEstimate(bookingId, estimate, salon)
+      let locationAddress = ''
+      let addressLookupWarning = ''
+      try {
+        locationAddress = await reverseGeocodeLocation(position)
+      } catch (addressError) {
+        addressLookupWarning = addressError.message || 'The precise area address could not be looked up.'
+      }
+      const locationAddressDetails = globalThis.localStorage?.getItem(`booksaloon-location-address:${userId}`) || ''
+      const preciseLocationAddress = combineLocationAddress(locationAddressDetails, locationAddress)
+      setUserLocation({ ...position, ...(preciseLocationAddress ? { address: preciseLocationAddress } : {}) })
+      setTravelEstimate(saved)
+      setUserLocationAddress(preciseLocationAddress)
+      setSmartLeaveMessage(`Location found${preciseLocationAddress ? `: ${preciseLocationAddress}` : ''}. Your travel estimate is ready, and your coordinates stay on this device.${addressLookupWarning ? ` Address lookup warning: ${addressLookupWarning}` : ''}`)
+    } catch (locationError) {
+      setSmartLeaveMessage(locationError.message || 'Unable to get your current location. Check location permission and try again.')
+    } finally {
+      setLocatingUser(false)
+    }
+  }, [bookingId, salon, userId])
+
+  const showRideApps = async () => {
+    if (rideAppsOpen) {
+      setRideAppsOpen(false)
+      return
+    }
+    setRideAppsOpen(true)
+    if (rideApps.length) return
+    setRideAppsLoading(true)
+    setRideAppsError('')
+    try {
+      setRideApps(await getAvailableRideApps({ native: Boolean(window.Capacitor?.isNativePlatform?.()) }))
+    } catch (rideError) {
+      setRideAppsError(rideError.message || 'Unable to load ride apps.')
+    } finally {
+      setRideAppsLoading(false)
+    }
+  }
+
+  const chooseRideApp = async (app) => {
+    setRideAppsError('')
+    try {
+      await openRideApp(app.id, {
+        latitude: salon?.latitude,
+        longitude: salon?.longitude,
+        address: salon?.location_description || salon?.address_line1 || salon?.name,
+      }, { native: Boolean(window.Capacitor?.isNativePlatform?.()) })
+    } catch (rideError) {
+      setRideAppsError(rideError.message || `Unable to open ${app.name}.`)
+    }
+  }
 
   useEffect(() => {
     setTravelEstimate(readTravelEstimate(bookingId))
     setSmartLeaveMessage('')
     setSmartLeaveStatus('')
+    setUserLocation(null)
+    autoLocationBooking.current = ''
   }, [bookingId])
 
-  const enableSmartLeaveReminder = async () => {
-    setSmartLeaveMessage('')
-    setSmartLeaveStatus('')
-    if (!entry || ['CANCELLED', 'COMPLETED', 'SERVING'].includes(entry.status)
-        || ['CANCELLED', 'COMPLETED', 'IN_PROGRESS'].includes(entry.booking?.status)) {
-      setSmartLeaveMessage('A current active booking is required to enable this reminder.')
-      return
-    }
-    if (!salon || salon.latitude == null || salon.longitude == null) {
-      setSmartLeaveMessage('Salon location has not been configured. Smart travel reminders are currently unavailable.')
-      return
-    }
-    try {
-      const position = await getOneTimeLocation({
-        isNative: Boolean(window.Capacitor?.isNativePlatform?.()),
-      })
-      const estimate = createTravelEstimate(position, salon, position.timestamp || Date.now())
-      let permission
-      try {
-        permission = await requestLeaveReminderNotificationPermission()
-      } catch (permissionError) {
-        setSmartLeaveMessage(`Notifications could not be enabled: ${permissionError.message}`)
+  useEffect(() => {
+    if (!locationAccessEnabled || !hasQueueEntry || !salon || hasTravelEstimate || autoLocationBooking.current === bookingId
+        || !['WAITING', 'CALLED'].includes(queueEntryStatus)
+        || ['CANCELLED', 'COMPLETED', 'IN_PROGRESS'].includes(bookingStatus)) return undefined
+
+    autoLocationBooking.current = bookingId
+    captureCurrentLocation()
+    return undefined
+  }, [bookingId, hasQueueEntry, salon, hasTravelEstimate, queueEntryStatus, bookingStatus, locationAccessEnabled, captureCurrentLocation])
+
+  useEffect(() => {
+      if (!hasQueueEntry || !['WAITING', 'CALLED'].includes(queueEntryStatus)
+          || !hasTravelEstimate || !expectedStartAt) return undefined
+    let active = true
+    supabase.rpc('schedule_travel_reminder', {
+      p_booking_id: bookingId,
+        p_travel_minutes: travelMinutes,
+    }).then(({ data, error: scheduleError }) => {
+      if (!active) return
+      if (scheduleError) {
+        setSmartLeaveMessage(`Your travel estimate is ready, but the automatic push reminder could not be scheduled: ${scheduleError.message}`)
+      } else if (data) {
+        setSmartLeaveStatus('scheduled')
       }
-      const saved = saveTravelEstimate(bookingId, estimate, salon)
-      setTravelEstimate(saved)
-      setSmartLeaveMessage(permission?.granted
-        ? 'Travel estimate saved on this device. Your reminder will follow the live queue countdown.'
-        : permission
-          ? 'Travel estimate saved. Notifications are disabled, but the leave reminder will appear on this screen while it is open.'
-          : 'Travel estimate saved. Notifications could not be enabled, but the leave reminder will appear on this screen while it is open.')
-    } catch (locationError) {
-      setSmartLeaveMessage(locationError.message || 'Unable to enable the travel reminder. You can continue using your booking.')
-    }
-  }
+    }).catch((scheduleError) => {
+      if (active) setSmartLeaveMessage(`Your travel estimate is ready, but the automatic push reminder could not be scheduled: ${scheduleError.message}`)
+    })
+    return () => { active = false }
+  }, [bookingId, hasQueueEntry, queueEntryStatus, expectedStartAt, hasTravelEstimate, travelMinutes])
 
   const disableSmartLeaveReminder = async () => {
     try {
@@ -222,24 +314,28 @@ export default function LiveQueueTracker({ bookingId, userId }) {
         const permission = await requestAndroidNotificationPermission()
         if (!permission.supported) throw new Error('Notifications are not supported on this device.')
         if (!permission.granted) throw new Error('Allow notifications in Android settings to continue.')
+        const leavePermission = await requestLeaveReminderNotificationPermission()
         await showCurrentStatusNotification({ title: 'BOOKSALOON appointment status', body: statusBody, bookingId })
         statusSent = true
         const result = await initializeAndroidNotifications()
         setNotificationMessage(result.supported
-          ? 'Current status notification sent. Future appointment updates are enabled.'
+          ? `Current status notification sent. Future appointment updates are enabled.${leavePermission.granted ? ' Your automatic leave reminder is enabled.' : ' Allow local notifications to receive the leave reminder.'}`
           : `Current status notification sent. Future updates are unavailable: ${result.reason || 'push notifications are not configured on this app build.'}`)
+        setNow(Date.now())
         return
       }
 
       const permission = await requestWebNotifications()
       if (!permission.supported) throw new Error('This browser does not support notifications.')
       if (!permission.granted) throw new Error('Notification permission was not granted.')
+      const leavePermission = await requestLeaveReminderNotificationPermission()
       await showCurrentStatusNotification({ title: 'BOOKSALOON appointment status', body: statusBody, bookingId })
       statusSent = true
       const result = await registerWebDevice(userId)
       setNotificationMessage(result.pushSupported
-        ? 'Current status notification sent. Future appointment updates are enabled.'
+        ? `Current status notification sent. Future appointment updates are enabled.${leavePermission.granted ? ' Your automatic leave reminder is enabled.' : ' Browser notifications are disabled for the leave reminder.'}`
         : 'Current status notification sent. Background push notifications are not supported in this browser.')
+      setNow(Date.now())
     } catch (notificationError) {
       setNotificationMessage(statusSent
         ? `Current status notification sent, but future updates could not be enabled: ${notificationError.message || 'unknown error'}`
@@ -274,6 +370,7 @@ export default function LiveQueueTracker({ bookingId, userId }) {
         <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#d9b78c]">BOOKSALOON live queue</p>
         <h1 className="mt-2 text-3xl font-black">{salon?.name || 'Salon'}</h1>
         <p className="mt-2 text-slate-300">{salon?.city || ''} {service ? `• ${service}` : ''}</p>
+        {directionsUrl && <a href={directionsUrl} target="_blank" rel="noreferrer" className="mt-4 inline-flex rounded-full bg-[#d9b78c] px-4 py-2 text-sm font-bold text-[#0b1220]">Open Google Maps directions</a>}
         <div className="mt-6 flex items-end justify-between"><div><p className="text-sm text-slate-400">Queue token</p><p className="text-4xl font-black">#{entry.queue_number}</p></div><div className="text-right"><p className="text-sm text-slate-400">Estimated wait</p><p className="text-3xl font-black text-[#d9b78c]">{remaining ?? '--'} min</p></div></div>
         <div className="mt-5 h-3 overflow-hidden rounded-full bg-white/15"><div className="h-full rounded-full bg-[#d9b78c] transition-all duration-700" style={{ width: `${progress}%` }} /></div>
         <p className="mt-2 text-xs text-slate-400">Estimate updates as salon conditions change.</p>
@@ -298,6 +395,26 @@ export default function LiveQueueTracker({ bookingId, userId }) {
         ) : (
           <>
             <p className="mt-4 text-sm font-semibold text-slate-100">{salon.location_description || salon.address_line1 || salon.name || 'Salon location saved'}</p>
+            {userLocationAddress && <p className="mt-2 text-sm text-slate-300">Your current area: {userLocationAddress}</p>}
+            <div className="mt-4 flex flex-wrap gap-3">
+              {directionsUrl && <a href={directionsUrl} target="_blank" rel="noreferrer" className="inline-flex rounded-full bg-[#d9b78c] px-4 py-2 text-sm font-bold text-[#0b1220]">Open Google Maps directions</a>}
+              <button type="button" onClick={showRideApps} className="rounded-full border border-white/25 px-4 py-2 text-sm font-bold text-white hover:bg-white/10">
+                {rideAppsOpen ? 'Hide ride apps' : 'Book a ride now'}
+              </button>
+            </div>
+            {rideAppsOpen && (
+              <div className="mt-3 rounded-2xl border border-white/15 bg-white/5 p-4">
+                <p className="font-bold text-white">{window.Capacitor?.isNativePlatform?.() ? 'Ride apps installed on this device' : 'Ride services (installed apps will open if available)'}</p>
+                {rideAppsLoading && <p className="mt-2 text-sm text-slate-300">Checking available ride apps...</p>}
+                {!rideAppsLoading && rideApps.length === 0 && !rideAppsError && (
+                  <p className="mt-2 text-sm text-slate-300">No supported ride apps were found. Use Google Maps directions instead.</p>
+                )}
+                {rideAppsError && <p role="alert" className="mt-2 text-sm text-rose-200">{rideAppsError}</p>}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {rideApps.map((app) => <button key={app.id} type="button" onClick={() => chooseRideApp(app)} className="rounded-full bg-white px-4 py-2 text-sm font-bold text-slate-900">{app.name}</button>)}
+                </div>
+              </div>
+            )}
             {travelEstimate ? (
               <>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -324,8 +441,8 @@ export default function LiveQueueTracker({ bookingId, userId }) {
                 <button type="button" onClick={disableSmartLeaveReminder} className="mt-4 rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/10">Disable Smart Leave Reminder</button>
               </>
             ) : (
-              <button type="button" onClick={enableSmartLeaveReminder} className="mt-5 inline-flex items-center gap-2 rounded-full bg-[#d9b78c] px-5 py-3 text-sm font-black text-[#0b1220]">
-                <MapPin size={16} /> Enable Smart Leave Reminder
+              <button type="button" onClick={captureCurrentLocation} disabled={locatingUser} className="mt-5 inline-flex items-center gap-2 rounded-full bg-[#d9b78c] px-5 py-3 text-sm font-black text-[#0b1220] disabled:opacity-50">
+                <MapPin size={16} /> {locatingUser ? 'Getting your location...' : 'Use my location for travel estimate'}
               </button>
             )}
           </>

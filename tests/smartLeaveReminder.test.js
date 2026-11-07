@@ -217,7 +217,7 @@ test('completion, missing ETA, denied web notification and explicit disable are 
     expectedStartAt: new Date(now + 13 * 60_000).toISOString(),
     now, notifications: deniedNotifications, storage,
   })
-  assert.equal(due.status, 'sent')
+  assert.equal(due.status, 'notification-unavailable')
   assert.equal(deniedNotifications.calls.shown.length, 0)
 
   const completed = await reconcileSmartLeaveReminder({

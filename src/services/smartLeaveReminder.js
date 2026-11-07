@@ -214,7 +214,8 @@ export async function reconcileSmartLeaveReminder({
   }
 
   if (plan.due) {
-    await notifications.show({ id: notificationId, title, body, bookingId })
+    const result = await notifications.show({ id: notificationId, title, body, bookingId })
+    if (!result?.supported) return { status: 'notification-unavailable', plan, estimate: saved }
     markReminderSent(bookingId, now, storage)
     return { status: 'sent', plan, estimate: readTravelEstimate(bookingId, storage, now) }
   }

@@ -6,8 +6,10 @@ const AUTH_SCHEME = ['Bear', 'er'].join('')
 const EVENT_TYPES = new Set([
   'BOOKING_CONFIRMED', 'QUEUE_JOINED', 'QUEUE_ETA_UPDATED', 'TURN_APPROACHING',
   'CUSTOMER_NEXT', 'CHAIR_READY', 'BOOKING_CANCELLED', 'SERVICE_STARTED', 'SERVICE_COMPLETED',
+  'TRAVEL_REMINDER',
 ])
 const TURN_EVENTS = new Set(['TURN_APPROACHING', 'CUSTOMER_NEXT', 'CHAIR_READY'])
+const QUEUE_EVENTS = new Set(['QUEUE_JOINED', 'QUEUE_ETA_UPDATED', 'TRAVEL_REMINDER'])
 const MAX_ATTEMPTS = 5
 const LEASE_SECONDS = 300
 const NEVER_RETRY = '9999-12-31T23:59:59.000Z'
@@ -91,6 +93,10 @@ function messageFor(event: EventRow) {
     BOOKING_CANCELLED: ['Appointment cancelled', 'Your BOOKSALOON appointment was cancelled.'],
     SERVICE_STARTED: ['Service started', `Your ${service} service has started.`],
     SERVICE_COMPLETED: ['Service completed', `Your ${service} service is complete. Thank you.`],
+    TRAVEL_REMINDER: [
+      'Time to leave for your appointment',
+      `Your journey to ${event.payload.salonName || 'the salon'} is estimated at ${event.payload.travelMinutes ?? 0} minutes. Leave now to arrive with a ${event.payload.preparationBufferMinutes ?? 3}-minute preparation buffer.`,
+    ],
   }
   const [title, body] = messages[event.event_type]
   return {
@@ -124,7 +130,7 @@ function preferenceAllows(eventType: string, platform: Device['platform'], prefe
   if (platform === 'WEB' && !preferences.browser_enabled) return false
   if (platform === 'ANDROID' && !preferences.android_enabled) return false
   if (TURN_EVENTS.has(eventType)) return preferences.queue_enabled && preferences.turn_alerts_enabled
-  if (eventType === 'QUEUE_JOINED' || eventType === 'QUEUE_ETA_UPDATED') return preferences.queue_enabled
+  if (QUEUE_EVENTS.has(eventType)) return preferences.queue_enabled
   return preferences.booking_updates
 }
 

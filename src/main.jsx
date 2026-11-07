@@ -5,7 +5,9 @@ import './index.css'
 import App from './App.jsx'
 
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch((error) => {
+  const buildId = document.querySelector('meta[name="app-build-id"]')?.content
+  const workerUrl = buildId ? `/sw.js?build=${encodeURIComponent(buildId)}` : '/sw.js'
+  window.addEventListener('load', () => navigator.serviceWorker.register(workerUrl).catch((error) => {
     console.error('Unable to register notification service worker:', error)
   }))
 }

@@ -43,14 +43,16 @@ import { customerProfile, offers, salons, serviceCatalog } from './data/mockData
 import { issueAdminSession, revokeAdminSession, validateAdminSession } from './lib/adminService'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 import { initializeAndroidNotifications, publishQueueNotification, requestAndroidNotificationPermission } from './services/platformNotificationAdapter'
+import { combineLocationAddress, createGoogleMapsDirectionsUrl, reverseGeocodeLocation, searchAddress } from './services/addressSearch'
+import { hasActiveBooking, isActiveBookingStatus } from './services/bookingRules'
 import FrontendLandingPage from '../frontend/src/components/LandingPage'
 import LiveQueueTracker from './components/queue/LiveQueueTracker'
+import AppUpdateBanner from './components/AppUpdateBanner'
 import {
   getOneTimeLocation,
   isValidCoordinates,
-  requestForegroundLocationPermission,
 } from './services/smartLeaveReminder'
-import { clearCustomerBookingHistory, filterCustomerBookingHistory } from './services/customerHistory'
+import { clearCustomerBookingHistory, filterCustomerBookingHistory, isClearableBookingStatus } from './services/customerHistory'
 
 const formatCurrency = (value) => `₹${value.toLocaleString('en-IN')}`
 const INDIAN_PHONE_PATTERN = /^[6-9]\d{9}$/
@@ -663,6 +665,8 @@ function ServiceCard({ service }) {
 }
 
 function BookingCard({ booking }) {
+  const [showOwnerContact, setShowOwnerContact] = useState(false)
+  const canRequestCancellation = isActiveBookingStatus(booking.status)
   return (
     <div className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-[0_18px_30px_rgba(15,23,42,0.05)]">
       <div className="flex items-start justify-between gap-3">
@@ -694,6 +698,24 @@ function BookingCard({ booking }) {
           <p className="mt-1 font-semibold text-slate-800">{booking.id}</p>
         </div>
       </div>
+      {canRequestCancellation && (
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          {!showOwnerContact ? (
+            <button type="button" onClick={() => setShowOwnerContact(true)} className="rounded-full border border-rose-200 px-4 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50">
+              Request cancellation
+            </button>
+          ) : (
+            <div className="rounded-2xl bg-amber-50 p-4 text-sm text-amber-950">
+              <p className="font-bold">Please contact the salon owner to cancel</p>
+              <p className="mt-1">Only the salon owner can cancel this appointment. Call and ask them to cancel it for you.</p>
+              <a href="tel:9313222912" className="mt-3 inline-flex rounded-full bg-amber-950 px-4 py-2 font-semibold text-white">
+                Call salon owner: 9313222912
+              </a>
+              <button type="button" onClick={() => setShowOwnerContact(false)} className="ml-3 text-xs font-semibold underline">Close</button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -775,7 +797,7 @@ function ConfirmationDialog({ title, message, onClose, onConfirm, submitting = f
   )
 }
 
-function HomePage({ userName, userId, userBookings, onBookingCreated }) {
+function HomePage({ userName, userId, userBookings, onBookingCreated, locationAccessMessage, onRequestLocation, locationEnabled, requestingLocation, locationAddressDetails, onLocationAddressDetailsChange }) {
   const navigate = useNavigate()
   const { data: serviceList = serviceCatalog, isLoading } = useQuery({
     queryKey: ['services-home'],
@@ -800,7 +822,7 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
     queryKey: ['customer-salon-status'],
     enabled: isSupabaseConfigured,
     queryFn: async () => {
-      const { data, error } = await supabase.from('salons').select('id, status').order('created_at', { ascending: true }).limit(1).single()
+      const { data, error } = await supabase.from('salons').select('id, name, phone, status').order('created_at', { ascending: true }).limit(1).single()
       if (error) throw new Error(error.message)
       return data
     },
@@ -814,6 +836,7 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
   const [bookingError, setBookingError] = useState('')
   const [bookingSubmitting, setBookingSubmitting] = useState(false)
   const salonClosed = salonStatus?.status === 'PAUSED'
+  const hasExistingActiveBooking = hasActiveBooking(userBookings)
 
   if (isLoading) {
     return <LoadingScreen />
@@ -832,6 +855,10 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
   const total = selectedServices.reduce((sum, item) => sum + item.price, 0)
   const totalWithPriority = total + (isPriority ? 50 : 0)
   const confirmBooking = async () => {
+    if (hasExistingActiveBooking) {
+      setBookingError('You already have an active appointment. It must be cancelled by the salon owner or fulfilled before booking again.')
+      return
+    }
     if (salonClosed) {
       setIsBookingOpen(false)
       setShowClosedPopup(true)
@@ -843,16 +870,26 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
     }
     setBookingSubmitting(true)
     setBookingError('')
-    const { data, error } = await supabase.rpc('create_auto_assigned_booking', {
-      p_salon_id: salonStatus.id,
-      p_service_ids: selectedServices.map((service) => service.id),
-      p_priority: isPriority,
-    })
-    setBookingSubmitting(false)
+    let data
+    let error
+    try {
+      ({ data, error } = await supabase.rpc('create_auto_assigned_booking', {
+        p_salon_id: salonStatus.id,
+        p_service_ids: selectedServices.map((service) => service.id),
+        p_priority: isPriority,
+      }))
+    } catch (requestError) {
+      setBookingError(getErrorMessage(requestError, 'Unable to create your appointment. Please try again.'))
+      return
+    } finally {
+      setBookingSubmitting(false)
+    }
     if (error) {
       if (error.message.includes('SALON_CLOSED')) {
         setIsBookingOpen(false)
         setShowClosedPopup(true)
+      } else if (error.message.includes('ACTIVE_BOOKING_EXISTS')) {
+        setBookingError('You already have an active appointment. It must be cancelled by the salon owner or fulfilled before booking again.')
       } else {
         setBookingError(error.message)
       }
@@ -863,7 +900,8 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
       id: result.booking_id,
       bookingId: result.booking_id,
       service: selectedServices.map((service) => service.name).join(', '),
-      salon: 'BOOKSALOON Demo Salon',
+      salon: salonStatus.name || 'BOOKSALOON Demo Salon',
+      ownerPhone: salonStatus.phone,
       amount: `₹${totalWithPriority}`,
       barber: result.employee_name,
       date: result.estimated_start_at
@@ -874,7 +912,7 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
     }
     onBookingCreated(booking)
     if (result.booking_status === 'WAITING') {
-      await publishQueueNotification({
+      publishQueueNotification({
         title: 'The Saloon waiting time',
         body: result.estimated_wait_minutes == null
           ? 'Barbers are currently unavailable. Your appointment is queued; the wait time will be updated.'
@@ -882,15 +920,49 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
         bookingId: result.booking_id,
         progress: 0,
         estimatedStartAt: result.estimated_start_at,
+        startedAt: new Date().toISOString(),
+      }).catch((notificationError) => {
+        console.error('Unable to publish the initial queue notification:', notificationError)
+        setBookingError(`Your appointment was booked, but its first notification could not be shown: ${notificationError.message}`)
       })
     }
     setIsBookingOpen(false)
     setSelectedServices([])
     setIsPriority(false)
+    if (result.booking_status === 'WAITING') navigate(`/customer/queue/${result.booking_id}`)
   }
 
   return (
     <div className="space-y-6 pb-24">
+      <div className="flex flex-col gap-3 rounded-2xl bg-violet-50 p-4 text-sm text-violet-900 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-bold">{locationEnabled ? 'Location is enabled for your queue journey' : 'Enable location for your queue journey'}</p>
+            <p className="mt-1">Allow one-time location access to estimate your trip and show ride options. Your coordinates stay on this device.</p>
+          </div>
+          <button type="button" onClick={onRequestLocation} disabled={requestingLocation} className="shrink-0 rounded-full bg-violet-700 px-4 py-2.5 font-bold text-white disabled:opacity-50">
+            {requestingLocation ? 'Getting location...' : locationEnabled ? 'Update current location' : 'Enable location'}
+          </button>
+      </div>
+      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <label className="block text-sm font-semibold text-slate-800">
+          Your exact pickup address details
+          <input
+            value={locationAddressDetails}
+            onChange={(event) => onLocationAddressDetailsChange(event.target.value)}
+            placeholder="House/flat, floor, building or landmark"
+            autoComplete="street-address"
+            className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 font-normal"
+          />
+        </label>
+        <p className="mt-2 text-xs text-slate-500">GPS can find your area, sector, district, city and state, but it cannot detect your house number or floor. Add those details for a more precise pickup address.</p>
+        {locationAccessMessage && <p role="status" className="mt-2 rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-800">{locationAccessMessage}</p>}
+      </div>
+      {hasExistingActiveBooking && (
+        <p role="status" className="rounded-2xl bg-amber-50 p-3 text-sm text-amber-950">
+          You already have an active appointment. Complete it or contact the salon owner to cancel before booking another.
+          <Link to="/customer/bookings" className="ml-2 font-bold underline">View appointment</Link>
+        </p>
+      )}
       <section className="rounded-[30px] bg-[radial-gradient(circle_at_top_left,#f5f3ff_0%,#eef2ff_35%,#ffffff_100%)] p-5 shadow-[0_18px_40px_rgba(79,70,229,0.08)] sm:p-6">
         <div className="flex items-center justify-between">
           <div>
@@ -916,8 +988,8 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
               if (salonClosed) setShowClosedPopup(true)
               else if (selectedServices.length > 0) setIsBookingOpen(true)
             }}
-            disabled={selectedServices.length === 0 || salonClosed}
-            className={`w-full sm:py-4 ${selectedServices.length === 0 || salonClosed ? 'cursor-not-allowed opacity-50' : ''}`}
+            disabled={selectedServices.length === 0 || salonClosed || hasExistingActiveBooking}
+            className={`w-full sm:py-4 ${selectedServices.length === 0 || salonClosed || hasExistingActiveBooking ? 'cursor-not-allowed opacity-50' : ''}`}
           >
             Book Appointment <ArrowRight size={16} />
           </PrimaryButton>
@@ -1004,7 +1076,7 @@ function HomePage({ userName, userId, userBookings, onBookingCreated }) {
           </div>
 
           <div className="mt-4 flex justify-end">
-            <PrimaryButton type="button" onClick={() => salonClosed ? setShowClosedPopup(true) : setIsBookingOpen(true)} disabled={salonClosed}>
+            <PrimaryButton type="button" onClick={() => salonClosed ? setShowClosedPopup(true) : setIsBookingOpen(true)} disabled={salonClosed || hasExistingActiveBooking}>
               Confirm booking
             </PrimaryButton>
           </div>
@@ -1132,16 +1204,18 @@ function ExplorePage() {
   )
 }
 
-function BookingsPage({ userBookings, onClearBookings }) {
+function BookingsPage({ userBookings, onClearBookings, message }) {
+  const clearableBookings = userBookings.filter((booking) => isClearableBookingStatus(booking.status))
   return (
     <div className="space-y-4 pb-24">
       <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
         <div>
         <h2 className="text-xl font-black tracking-[-0.06em]">My Bookings</h2>
-          <p className="text-xs text-slate-500">Clearing hides this history on this device; it does not cancel appointments.</p>
+          <p className="text-xs text-slate-500">Only cancelled or completed appointments can be cleared. Ongoing appointments stay here.</p>
         </div>
-        {userBookings.length > 0 && <button type="button" onClick={onClearBookings} className="inline-flex items-center gap-2 rounded-full border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50"><Trash2 size={14} /> Clear bookings</button>}
+        {clearableBookings.length > 0 && <button type="button" onClick={onClearBookings} className="inline-flex items-center gap-2 rounded-full border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50"><Trash2 size={14} /> Clear completed/cancelled</button>}
       </div>
+      {message && <p role="status" className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">{message}</p>}
       {userBookings.map((booking) => (
         <BookingCard key={booking.id} booking={booking} />
       ))}
@@ -1153,8 +1227,10 @@ function BookingsPage({ userBookings, onClearBookings }) {
 function NotificationsPage({ userId }) {
   const [userNotifications, setUserNotifications] = useState([])
   const [message, setMessage] = useState('')
+  const [successMessage, setSuccessMessage] = useState('')
   const [clearing, setClearing] = useState(false)
   const clearedAt = useRef(0)
+  const clearVersion = useRef(0)
 
   useEffect(() => {
     let active = true
@@ -1162,6 +1238,7 @@ function NotificationsPage({ userId }) {
 
     const loadNotifications = async () => {
       if (!isSupabaseConfigured || !userId) return
+      const requestVersion = clearVersion.current
       const { data, error } = await supabase
         .from('notifications')
         .select('id, title, message, created_at, is_read')
@@ -1171,13 +1248,16 @@ function NotificationsPage({ userId }) {
         if (active) setMessage(error.message)
         return
       }
-      if (!active) return
-      setUserNotifications(data || [])
+      if (!active || requestVersion !== clearVersion.current) return
+      setUserNotifications((data || []).filter((notification) => (
+        new Date(notification.created_at).getTime() > clearedAt.current
+      )))
 
       channel = supabase
         .channel(`customer-notifications-${userId}`)
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` }, (payload) => {
           if (new Date(payload.new.created_at).getTime() <= clearedAt.current) return
+          setSuccessMessage('')
           setUserNotifications((current) => current.some((item) => item.id === payload.new.id) ? current : [payload.new, ...current])
         })
         .subscribe()
@@ -1193,13 +1273,22 @@ function NotificationsPage({ userId }) {
   const clearNotifications = async () => {
     setClearing(true)
     setMessage('')
+    setSuccessMessage('')
     try {
       if (isSupabaseConfigured && userId) {
-        const { error } = await supabase.rpc('clear_customer_notifications')
-        if (error) throw new Error(error.message)
+        const { error: rpcError } = await supabase.rpc('clear_customer_notifications')
+        if (rpcError) {
+          const missingFunction = rpcError.code === 'PGRST202'
+            || rpcError.message?.includes('Could not find the function public.clear_customer_notifications')
+          if (!missingFunction) throw new Error(rpcError.message)
+          const { error: deleteError } = await supabase.from('notifications').delete().eq('user_id', userId)
+          if (deleteError) throw new Error(deleteError.message)
+        }
       }
       clearedAt.current = Date.now()
+      clearVersion.current += 1
       setUserNotifications([])
+      setSuccessMessage('All existing notifications have been permanently deleted.')
     } catch (error) {
       setMessage(error.message || 'Unable to clear notifications.')
     } finally {
@@ -1214,6 +1303,7 @@ function NotificationsPage({ userId }) {
         {userNotifications.length > 0 && <button type="button" onClick={clearNotifications} disabled={clearing} className="inline-flex items-center gap-2 rounded-full border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-50"><Trash2 size={14} /> {clearing ? 'Clearing...' : 'Clear notifications'}</button>}
       </div>
       {message && <p role="alert" className="rounded-2xl bg-rose-50 p-3 text-sm text-rose-700">{message}</p>}
+      {successMessage && <p role="status" className="rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-700">{successMessage}</p>}
       {userNotifications.map((notification) => (
         <NotificationCard
           key={notification.id}
@@ -1733,12 +1823,27 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
     setClearingNotifications(true)
     setMessage('')
     try {
-      const { data: deletedCount, error } = await supabase.rpc('clear_admin_salon_notifications', {
+      const { error: rpcError } = await supabase.rpc('clear_admin_salon_notifications', {
         p_salon_id: selectedSalonId,
       })
-      if (error) throw new Error(error.message)
+
+      const { error: deleteError } = await supabase
+        .from('notifications')
+        .delete()
+        .eq('salon_id', selectedSalonId)
+      if (deleteError && rpcError) {
+        throw new Error(`${rpcError.message}; direct deletion also failed: ${deleteError.message}`)
+      }
+
+      const { count: remainingCount, error: verifyError } = await supabase
+        .from('notifications')
+        .select('id', { count: 'exact', head: true })
+        .eq('salon_id', selectedSalonId)
+      if (verifyError) throw new Error(verifyError.message)
+      if (remainingCount > 0) throw new Error(`${remainingCount} salon notification(s) remain. Please try clearing again.`)
+
       queryClient.setQueryData(['admin-control', section, selectedSalonId], [])
-      setMessage(`${deletedCount || 0} notification${deletedCount === 1 ? '' : 's'} cleared, including read notifications.`)
+      setMessage('All salon notifications, including read notifications, have been permanently deleted.')
       await queryClient.invalidateQueries({ queryKey: ['admin-control', section, selectedSalonId] })
     } catch (error) {
       setMessage(error.message || 'Unable to clear salon notifications.')
@@ -1857,7 +1962,7 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
         })}
         <div className="flex justify-end"><PrimaryButton type="submit">Save business hours</PrimaryButton></div>
       </form>
-      {message && <p className="rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-700">{message}</p>}
+      {message && <p role={message.startsWith('All salon notifications') ? 'status' : 'alert'} className={`rounded-2xl p-3 text-sm ${message.startsWith('All salon notifications') ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{message}</p>}
     </section>
   }
 
@@ -1926,6 +2031,14 @@ function AdminControls({ section, selectedSalonId, onSalonCreated }) {
 
 function SalonLocationSettings({ salonId }) {
   const [form, setForm] = useState({ latitude: '', longitude: '', location_description: '' })
+  const [addressDetails, setAddressDetails] = useState('')
+  const [addressSearchQuery, setAddressSearchQuery] = useState('')
+  const [addressSuggestions, setAddressSuggestions] = useState([])
+  const [selectedAddress, setSelectedAddress] = useState(null)
+  const [addressConfirmed, setAddressConfirmed] = useState(false)
+  const [addressSearchError, setAddressSearchError] = useState('')
+  const [searchingAddresses, setSearchingAddresses] = useState(false)
+  const [hasSearchedAddresses, setHasSearchedAddresses] = useState(false)
   const [locationMode, setLocationMode] = useState('MANUAL')
   const [gpsCandidate, setGpsCandidate] = useState(null)
   const [gpsConfirmed, setGpsConfirmed] = useState(false)
@@ -1949,16 +2062,48 @@ function SalonLocationSettings({ salonId }) {
   useEffect(() => {
     const saved = locationQuery.data
     if (!saved) return
+    setAddressDetails('')
+    setAddressSearchQuery('')
     setForm({
       latitude: saved.latitude == null ? '' : String(saved.latitude),
       longitude: saved.longitude == null ? '' : String(saved.longitude),
       location_description: saved.location_description || saved.address_line1 || '',
     })
+    setAddressConfirmed(isValidCoordinates(saved.latitude, saved.longitude) && Boolean(saved.location_description || saved.address_line1))
+    setSelectedAddress(null)
     setLocationMode(saved.location_source || 'MANUAL')
     setGpsCandidate(null)
     setGpsConfirmed(false)
+    if (isValidCoordinates(saved.latitude, saved.longitude) && !saved.location_description && !saved.address_line1) {
+      reverseGeocodeLocation(saved).then((label) => {
+        setForm((current) => ({ ...current, location_description: label }))
+        setAddressConfirmed(true)
+        setLocationMode('GPS')
+      }).catch((error) => {
+        setMessage(`The saved location has no address label. Search and confirm the salon address: ${error.message}`)
+      })
+    }
   }, [locationQuery.data])
 
+  const findAddressMatches = async () => {
+    setAddressSuggestions([])
+    setAddressSearchError('')
+    setHasSearchedAddresses(false)
+    if (addressSearchQuery.trim().length < 3) {
+      setAddressSearchError('Enter at least three characters to search for an address.')
+      return
+    }
+    setSearchingAddresses(true)
+    try {
+      const suggestions = await searchAddress(addressSearchQuery)
+      setAddressSuggestions(suggestions)
+      setHasSearchedAddresses(true)
+    } catch (error) {
+      setAddressSearchError(error.message || 'Unable to search this address.')
+    } finally {
+      setSearchingAddresses(false)
+    }
+  }
   const detectLocation = async () => {
     setLocating(true)
     setMessage('')
@@ -1966,15 +2111,19 @@ function SalonLocationSettings({ salonId }) {
       const position = await getOneTimeLocation({
         isNative: Boolean(window.Capacitor?.isNativePlatform?.()),
       })
+      const locationDescription = await reverseGeocodeLocation(position)
+      setAddressSearchQuery(locationDescription)
+      setAddressDetails('')
       setForm((current) => ({
         ...current,
         latitude: Number(position.latitude).toFixed(6),
         longitude: Number(position.longitude).toFixed(6),
+        location_description: locationDescription,
       }))
       setGpsCandidate(position)
       setGpsConfirmed(false)
       setLocationMode('GPS')
-      setMessage('Location detected. Review and confirm it before saving.')
+      setMessage(`Location detected as ${locationDescription}. Review and confirm it before saving.`)
     } catch (error) {
       setMessage(error.message || 'Unable to get the current location.')
     } finally {
@@ -1983,15 +2132,64 @@ function SalonLocationSettings({ salonId }) {
   }
 
   const confirmDetectedLocation = () => {
+    if (!addressDetails.trim()) {
+      setMessage('Add the house, unit, floor, or exact place name before confirming this location.')
+      return
+    }
     setGpsConfirmed(true)
-    setMessage('Detected coordinates confirmed. Save to apply this salon location.')
+    setAddressConfirmed(true)
+    setMessage('Detected address confirmed. Save to apply this salon location.')
   }
 
   const updateManualField = (field, value) => {
     setLocationMode('MANUAL')
     setGpsCandidate(null)
     setGpsConfirmed(false)
-    setForm((current) => ({ ...current, [field]: value }))
+    setAddressConfirmed(false)
+    setSelectedAddress(null)
+    setForm((current) => ({
+      ...current,
+      [field]: value,
+      ...(field === 'location_description' ? { latitude: '', longitude: '' } : {}),
+    }))
+    if (field === 'location_description' && value.trim().length < 3) {
+      setAddressSuggestions([])
+      setAddressSearchError('')
+      setHasSearchedAddresses(false)
+    }
+  }
+
+  const chooseAddress = (address) => {
+    setSelectedAddress(address)
+    setAddressSearchQuery(address.label)
+    setAddressDetails('')
+    setForm((current) => ({
+      ...current,
+      location_description: address.label,
+      latitude: address.latitude.toFixed(6),
+      longitude: address.longitude.toFixed(6),
+    }))
+    setAddressSearchQuery('')
+    setAddressSuggestions([])
+    setHasSearchedAddresses(false)
+    setAddressConfirmed(false)
+    setGpsCandidate(null)
+    setGpsConfirmed(false)
+    setLocationMode('MANUAL')
+    setMessage('')
+  }
+
+  const confirmManualAddress = () => {
+    if (!form.location_description.trim() || !isValidCoordinates(form.latitude, form.longitude)) {
+      setMessage('Search for a salon address and choose a result before confirming.')
+      return
+    }
+    if (!addressDetails.trim()) {
+      setMessage('Add the house, unit, floor, or exact place name before confirming this location.')
+      return
+    }
+    setAddressConfirmed(true)
+    setMessage('Address confirmed. Save to apply this salon location.')
   }
 
   const saveLocation = async (event) => {
@@ -2002,11 +2200,19 @@ function SalonLocationSettings({ salonId }) {
       return
     }
     if (!isValidCoordinates(form.latitude, form.longitude)) {
-      setMessage('Enter valid latitude (-90 to 90) and longitude (-180 to 180).')
+      setMessage('Choose a searched address so we can save its exact map location.')
+      return
+    }
+    if ((selectedAddress || gpsCandidate) && !addressDetails.trim()) {
+      setMessage('Add the house, unit, floor, or exact place name to make this address precise.')
       return
     }
     if (locationMode === 'GPS' && !gpsConfirmed) {
       setMessage('Confirm the detected GPS location before saving.')
+      return
+    }
+    if (locationMode !== 'GPS' && !addressConfirmed) {
+      setMessage('Confirm the address and map pin before saving.')
       return
     }
     setSaving(true)
@@ -2014,7 +2220,7 @@ function SalonLocationSettings({ salonId }) {
       const latitude = Number(Number(form.latitude).toFixed(6))
       const longitude = Number(Number(form.longitude).toFixed(6))
       const { data, error } = await supabase.from('salons').update({
-        location_description: form.location_description.trim(),
+        location_description: combineLocationAddress(addressDetails, form.location_description),
         latitude,
         longitude,
         location_source: locationMode,
@@ -2024,6 +2230,7 @@ function SalonLocationSettings({ salonId }) {
       if (!data) throw new Error('You are not authorized to update this salon location.')
       setGpsCandidate(null)
       setGpsConfirmed(false)
+      setSelectedAddress(null)
       setMessage('Salon location saved.')
       queryClient.invalidateQueries({ queryKey: ['admin-salon-location', salonId] })
       queryClient.invalidateQueries({ queryKey: ['queue-booking'] })
@@ -2035,13 +2242,27 @@ function SalonLocationSettings({ salonId }) {
   }
 
   const hasSavedLocation = isValidCoordinates(locationQuery.data?.latitude, locationQuery.data?.longitude)
+  const previewLatitude = isValidCoordinates(form.latitude, form.longitude) ? Number(form.latitude) : null
+  const previewLongitude = isValidCoordinates(form.latitude, form.longitude) ? Number(form.longitude) : null
+  const mapBounds = previewLatitude == null
+    ? ''
+    : `${previewLongitude - 0.01}%2C${previewLatitude - 0.01}%2C${previewLongitude + 0.01}%2C${previewLatitude + 0.01}`
+  const mapEmbedUrl = previewLatitude == null
+    ? ''
+    : `https://www.openstreetmap.org/export/embed.html?bbox=${mapBounds}&layer=mapnik&marker=${previewLatitude}%2C${previewLongitude}`
+  const googleMapsUrl = createGoogleMapsDirectionsUrl({
+    latitude: previewLatitude,
+    longitude: previewLongitude,
+    location_description: form.location_description,
+  })
+  const preciseAddressPreview = combineLocationAddress(addressDetails, form.location_description)
 
   return (
     <section className="space-y-5">
       <div className="rounded-[28px] bg-[#0b1220] p-6 text-white shadow-xl">
         <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#d9b78c]">Salon settings</p>
         <h2 className="mt-2 text-2xl font-black">Salon Location</h2>
-        <p className="mt-2 max-w-2xl text-sm text-slate-300">Set a salon address and coordinates so customers can opt in to an approximate journey reminder.</p>
+        <p className="mt-2 max-w-2xl text-sm text-slate-300">Search for your salon address or use this device's location. Review the map and confirm the address before saving.</p>
       </div>
       {locationQuery.isLoading && <p className="rounded-2xl bg-white p-4 text-sm text-slate-500">Loading salon location...</p>}
       {locationQuery.isError && <p className="rounded-2xl bg-rose-50 p-4 text-sm text-rose-700">{locationQuery.error.message}</p>}
@@ -2051,7 +2272,6 @@ function SalonLocationSettings({ salonId }) {
             <div className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-900">
               <p className="font-bold">Saved salon location</p>
               <p className="mt-1">{locationQuery.data.location_description || locationQuery.data.address_line1}</p>
-              <p className="mt-1 font-mono">{locationQuery.data.latitude}, {locationQuery.data.longitude}</p>
               <p className="mt-1 text-xs text-emerald-800">
                 Source: {locationQuery.data.location_source || 'Previously saved'}
                 {locationQuery.data.location_updated_at
@@ -2071,24 +2291,75 @@ function SalonLocationSettings({ salonId }) {
           {gpsCandidate && (
             <div className="rounded-2xl border border-[#d9b78c]/50 bg-[#fffaf2] p-4 text-sm text-slate-800">
               <p className="font-bold">{gpsConfirmed ? 'GPS location confirmed' : 'Review detected GPS location'}</p>
-              <p className="mt-1 font-mono">{Number(gpsCandidate.latitude).toFixed(6)}, {Number(gpsCandidate.longitude).toFixed(6)}</p>
+              <p className="mt-1">{preciseAddressPreview}</p>
               <p className="mt-1">Accuracy: {Math.round(gpsCandidate.accuracy)} m</p>
             </div>
           )}
           <label className="block text-sm font-semibold text-slate-700">
-            Salon address or location description
-            <input value={form.location_description} onChange={(event) => updateManualField('location_description', event.target.value)} placeholder="Street address or nearby landmark" className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 font-normal" />
+            Search sector, district, city, or place name
+            <input
+              value={addressSearchQuery}
+              onChange={(event) => {
+                setAddressSearchQuery(event.target.value)
+                updateManualField('location_description', event.target.value)
+                setAddressSuggestions([])
+                setAddressSearchError('')
+                setSearchingAddresses(false)
+                setHasSearchedAddresses(false)
+                if (selectedAddress) setAddressDetails('')
+              }}
+              placeholder="For example: Sector 44, Noida"
+              autoComplete="street-address"
+              className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 font-normal"
+            />
+            <span className="mt-1 block text-xs font-normal text-slate-500">Choose the map result that matches the correct sector, district, city, and state. Search data may not include a house number or floor.</span>
           </label>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block text-sm font-semibold text-slate-700">
-              Latitude
-              <input inputMode="decimal" value={form.latitude} onChange={(event) => updateManualField('latitude', event.target.value)} placeholder="-90 to 90" className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 font-mono font-normal" />
-            </label>
-            <label className="block text-sm font-semibold text-slate-700">
-              Longitude
-              <input inputMode="decimal" value={form.longitude} onChange={(event) => updateManualField('longitude', event.target.value)} placeholder="-180 to 180" className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 font-mono font-normal" />
-            </label>
-          </div>
+          <label className="block text-sm font-semibold text-slate-700">
+            House, shop, building, floor, or exact place name
+            <input
+              value={addressDetails}
+              onChange={(event) => {
+                setAddressDetails(event.target.value)
+                setAddressConfirmed(false)
+                setGpsConfirmed(false)
+              }}
+              placeholder="For example: F-12, 2nd Floor, F Block"
+              autoComplete="address-line1"
+              className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 font-normal"
+            />
+            <span className="mt-1 block text-xs font-normal text-slate-500">This detail is combined with the selected map address and shown to customers for directions.</span>
+          </label>
+          <button type="button" onClick={findAddressMatches} disabled={searchingAddresses} className="rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50">
+            {searchingAddresses ? 'Searching addresses...' : 'Search address'}
+          </button>
+          {addressSearchError && <p role="alert" className="rounded-2xl bg-rose-50 p-3 text-sm text-rose-700">{addressSearchError}</p>}
+          {addressSuggestions.length > 0 && (
+            <div className="overflow-hidden rounded-2xl border border-slate-200">
+              {addressSuggestions.map((address) => (
+                <button key={`${address.latitude},${address.longitude}`} type="button" onClick={() => chooseAddress(address)} className="block w-full border-b border-slate-100 px-4 py-3 text-left text-sm last:border-0 hover:bg-violet-50">
+                  {address.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {hasSearchedAddresses && !searchingAddresses && !addressSearchError && addressSuggestions.length === 0 && (
+            <p className="text-sm text-slate-500">No matching addresses found. Try a nearby landmark or a more specific address.</p>
+          )}
+          {selectedAddress && !addressConfirmed && (
+            <div className="rounded-2xl border border-violet-200 bg-violet-50 p-4 text-sm text-violet-950">
+              <p className="font-bold">Confirm this salon address</p>
+              <p className="mt-1">{preciseAddressPreview}</p>
+              <button type="button" onClick={confirmManualAddress} className="mt-3 rounded-full bg-violet-700 px-4 py-2 font-semibold text-white">Confirm this address and map pin</button>
+            </div>
+          )}
+          {previewLatitude != null && (
+            <div className="space-y-3">
+              <iframe title="Salon location map preview" src={mapEmbedUrl} className="h-64 w-full rounded-2xl border border-slate-200" loading="lazy" />
+              <p className="text-xs text-slate-500">Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer" className="underline">OpenStreetMap contributors</a>.</p>
+              {googleMapsUrl && <a href={googleMapsUrl} target="_blank" rel="noreferrer" className="inline-flex rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700">Preview in Google Maps</a>}
+              {addressConfirmed && <p className="text-sm font-semibold text-emerald-700">Address and map pin confirmed.</p>}
+            </div>
+          )}
           {message && <p role="status" className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-700">{message}</p>}
           <div className="flex justify-end"><PrimaryButton type="submit" disabled={saving || locationQuery.isLoading}>{saving ? 'Saving...' : 'Save salon location'}</PrimaryButton></div>
         </form>
@@ -2389,6 +2660,7 @@ function AdminDashboard({ onLogout }) {
 
       <main className="min-w-0 p-5 sm:p-8">
         <div className="mx-auto max-w-6xl">
+        <AppUpdateBanner />
           <header className="mb-6 flex flex-col gap-4 rounded-[26px] border border-slate-200 bg-white p-5 shadow-[0_20px_40px_rgba(15,23,42,0.04)] md:flex-row md:items-center md:justify-between">
           <div>
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-violet-600">BOOKSALOON Admin</p>
@@ -2619,10 +2891,62 @@ function AuthPage({ initialMode, onLogin, onRegister }) {
 function CustomerApp({ user, onLogout }) {
   const [userBookings, setUserBookings] = useState([])
   const [profile, setProfile] = useState(user)
+  const [bookingHistoryMessage, setBookingHistoryMessage] = useState('')
+  const [locationAccessMessage, setLocationAccessMessage] = useState('')
+  const [locationAddressDetails, setLocationAddressDetails] = useState('')
+  const [customerGeocodedAddress, setCustomerGeocodedAddress] = useState('')
+  const [locationEnabled, setLocationEnabled] = useState(false)
+  const [requestingLocation, setRequestingLocation] = useState(false)
 
   const clearBookings = () => {
-    clearCustomerBookingHistory(profile.id, userBookings)
-    setUserBookings([])
+    try {
+      const clearedCount = clearCustomerBookingHistory(profile.id, userBookings)
+      setUserBookings((current) => filterCustomerBookingHistory(profile.id, current))
+      setBookingHistoryMessage(clearedCount
+        ? 'Cancelled and completed appointments were cleared from this device.'
+        : 'There are no cancelled or completed appointments to clear.')
+    } catch (error) {
+      setBookingHistoryMessage(error.message || 'Unable to clear completed appointment history.')
+    }
+  }
+
+  useEffect(() => {
+    if (!profile.id) return
+    const enabled = localStorage.getItem(`booksaloon-location-enabled:${profile.id}`) === 'true'
+    setLocationAddressDetails(localStorage.getItem(`booksaloon-location-address:${profile.id}`) || '')
+    setLocationEnabled(enabled)
+    if (enabled) setLocationAccessMessage('Location access is enabled. A fresh location is used only while your appointment is waiting.')
+  }, [profile.id])
+
+  const requestCustomerLocation = async () => {
+    setRequestingLocation(true)
+    setLocationAccessMessage('')
+    try {
+      const position = await getOneTimeLocation({ isNative: Boolean(window.Capacitor?.isNativePlatform?.()) })
+      localStorage.setItem(`booksaloon-location-enabled:${profile.id}`, 'true')
+      setLocationEnabled(true)
+      try {
+        const address = await reverseGeocodeLocation(position)
+        setCustomerGeocodedAddress(address)
+        setLocationAccessMessage(`Location enabled. Your address is ${combineLocationAddress(locationAddressDetails, address)}.`)
+      } catch (addressError) {
+        setCustomerGeocodedAddress('')
+        setLocationAccessMessage(`Location permission is enabled. Your trip estimate will still work; address lookup failed: ${addressError.message}`)
+      }
+    } catch (error) {
+      setLocationEnabled(false)
+      setLocationAccessMessage(error.message || 'Location is unavailable. Check your device/browser permission and try again.')
+    } finally {
+      setRequestingLocation(false)
+    }
+  }
+
+  const updateCustomerLocationAddress = (details) => {
+    setLocationAddressDetails(details)
+    localStorage.setItem(`booksaloon-location-address:${profile.id}`, details)
+    if (customerGeocodedAddress) {
+      setLocationAccessMessage(`Location enabled. Your address is ${combineLocationAddress(details, customerGeocodedAddress)}.`)
+    }
   }
 
   useEffect(() => {
@@ -2642,7 +2966,7 @@ function CustomerApp({ user, onLogout }) {
           .maybeSingle()
         const { data: bookingData, error: bookingError } = await supabase
           .from('bookings')
-          .select('id, booking_number, status, scheduled_start, created_at, total_paise, salon:salons(name), booking_items(service_name_snapshot), booking_staff(employee:employees(employee_name))')
+          .select('id, booking_number, status, scheduled_start, created_at, total_paise, salon:salons(name, phone, location_description, latitude, longitude), booking_items(service_name_snapshot), booking_staff(employee:employees(employee_name))')
           .eq('customer_id', authData.user.id)
           .order('created_at', { ascending: false })
         if (profileError) console.error('Unable to load customer profile:', profileError)
@@ -2667,6 +2991,10 @@ function CustomerApp({ user, onLogout }) {
             salon: booking.salon?.name || 'BOOKSALOON',
             amount: `₹${((booking.total_paise || 0) / 100).toLocaleString('en-IN')}`,
             barber: booking.booking_staff?.[0]?.employee?.employee_name || 'To be assigned',
+            ownerPhone: booking.salon?.phone,
+            salonLatitude: booking.salon?.latitude,
+            salonLongitude: booking.salon?.longitude,
+            salonAddress: booking.salon?.location_description,
             date: booking.scheduled_start ? new Date(booking.scheduled_start).toLocaleDateString('en-IN') : 'Date to be confirmed',
             status: booking.status === 'CONFIRMED' ? 'Confirmed' : booking.status === 'WAITING' ? 'Waiting' : booking.status,
           })))
@@ -2691,10 +3019,11 @@ function CustomerApp({ user, onLogout }) {
     <div className="min-h-screen bg-[#f5f7fb] text-slate-900">
       <AppHeader title="BOOKSALOON" subtitle="Premium salon booking" userName={profile.fullName} onLogout={onLogout} />
       <main className="mx-auto max-w-6xl px-4 py-5 pb-28 sm:px-6 lg:px-8 md:pb-5">
+        <AppUpdateBanner />
         <Routes>
           <Route index element={<Navigate to="home" replace />} />
-          <Route path="home" element={<HomePage userName={profile.fullName || 'Customer'} userId={profile.id} userBookings={userBookings} onBookingCreated={(booking) => setUserBookings((current) => [booking, ...current])} />} />
-          <Route path="bookings" element={<BookingsPage userBookings={userBookings} onClearBookings={clearBookings} />} />
+          <Route path="home" element={<HomePage userName={profile.fullName || 'Customer'} userId={profile.id} userBookings={userBookings} locationAccessMessage={locationAccessMessage} locationEnabled={locationEnabled} requestingLocation={requestingLocation} onRequestLocation={requestCustomerLocation} locationAddressDetails={locationAddressDetails} onLocationAddressDetailsChange={updateCustomerLocationAddress} onBookingCreated={(booking) => setUserBookings((current) => [booking, ...current])} />} />
+          <Route path="bookings" element={<BookingsPage userBookings={userBookings} onClearBookings={clearBookings} message={bookingHistoryMessage} />} />
           <Route path="queue/:bookingId" element={<LiveQueueRoute userId={profile.id} />} />
           <Route path="notifications" element={<NotificationsPage userId={profile.id} />} />
           <Route path="profile" element={<ProfilePage user={profile} />} />
@@ -2715,11 +3044,6 @@ function App() {
   useEffect(() => {
     const requestStartupPermissions = async () => {
       if (!window.Capacitor?.isNativePlatform?.()) return
-      try {
-        await requestForegroundLocationPermission({ isNative: true })
-      } catch (error) {
-        console.error('Unable to request Android location permission:', error)
-      }
       try {
         await requestAndroidNotificationPermission()
       } catch (error) {

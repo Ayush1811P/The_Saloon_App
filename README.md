@@ -62,12 +62,18 @@ reminder, and calculates approximate travel time locally:
    queue start-time estimate.
 
 These are configurable defaults in `src/services/smartLeaveReminder.js`; the
-estimate is not a map route or traffic forecast. The reminder follows the
-existing queue countdown and realtime ETA updates; it adds no polling timer,
-background location tracking, routing API, or backend scheduler. Android uses
-Capacitor local notifications. The web reminder is shown in the active queue
-page and can use a browser notification only when the page is visible and
-permission is granted.
+estimate is not a map route or traffic forecast. The queue page captures a
+fresh one-time customer location, shows Google Maps directions to the salon,
+and schedules a push reminder for the estimated leave time with a
+three-minute preparation buffer. Android also schedules a local notification.
+Browser push delivery requires an enabled push subscription and the configured
+VAPID secrets; the in-page reminder remains available when push is unavailable.
+
+Salon admins can search and confirm the map address, then add a house/shop,
+building, floor, or named-place detail. Customers can add their own pickup
+details as well. Reverse geocoding supplies available sector, district, city,
+and state components; house numbers and floors must be entered by the person
+who knows the exact address.
 
 Customer origin coordinates are not sent to Supabase. The device temporarily
 stores only derived travel information for up to 12 hours. Disabling the
@@ -75,9 +81,9 @@ reminder or ending the booking clears its saved estimate and cancels any
 pending local reminder.
 
 Salon administrators configure the destination under **Salon Location**.
-They can enter coordinates and a landmark/address or capture the device's
-current location, review it, and confirm before saving. Apply migrations 019 and 020
-before using this setting.
+They can search addresses, review the map pin, explicitly confirm it, or use
+the current device location. Search results use OpenStreetMap and directions
+open in Google Maps. Apply migrations 019 and 020 before using this setting.
 
 ### Administrator workspace
 
@@ -174,9 +180,11 @@ operations.
 Database instructions, migrations, authentication configuration, Edge Function
 secrets, push delivery setup, and operational notes are maintained in
 [`booksaloon_supabase/README_SETUP.md`](./booksaloon_supabase/README_SETUP.md).
-Apply migrations 001 through 021 in order to a new project. For a project
-already at migration 018, apply migrations 019, 020, and 021; at 019, apply
-020 and 021; at 020, apply 021. Do not rerun
+Apply migrations 001 through 023 in order to a new project. For an existing
+project at migration 022, apply migration 023. Migration 022 checks for
+customers with multiple active bookings and stops if any need to be resolved
+before the one-active-booking constraint can be added. Migration 023 refreshes
+the notification-clear RPC and adds an RLS-protected delete fallback. Do not rerun
 `BOOKSALOON_ALL_MIGRATIONS.sql` on an existing database.
 
 ## Build the Android APK
@@ -215,6 +223,20 @@ A debug APK is for development/testing, not a Play Store release. A public
 release should use a deliberately managed signing key and release build.
 `android/local.properties` and `android/app/google-services.json` are
 machine-specific/private and must not be committed.
+
+### In-app updates
+
+The website checks its service-worker registration for a waiting release and
+shows an **Update app** button to customer and admin sessions. Deploying a new
+website build changes the worker assets; users can apply that release from the
+button without manually clearing browser data.
+
+The Android app checks Google Play for an available immediate in-app update and
+shows the same button when one is available. To release an Android update,
+increment `versionCode` in `android/app/build.gradle`, build and sign the
+release, then publish it to the same Google Play application track. Android
+updates are discoverable only for Play-installed builds; sideloaded debug APKs
+must be updated by installing a new APK manually.
 
 ## Automated workflows
 
